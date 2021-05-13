@@ -3172,16 +3172,22 @@ class AstNodeFactory final {
     if (op != Token::INIT && target->IsVariableProxy()) {
       target->AsVariableProxy()->set_is_assigned();
     }
-
+    
+    Assignment* ret;
     if (op == Token::ASSIGN || op == Token::INIT) {
-      return zone_->New<Assignment>(AstNode::kAssignment, op, target, value,
+      ret = zone_->New<Assignment>(AstNode::kAssignment, op, target, value,
                                     pos);
     } else {
-      return zone_->New<CompoundAssignment>(
+      ret = zone_->New<CompoundAssignment>(
           op, target, value, pos,
           NewBinaryOperation(Token::BinaryOpForAssignment(op), target, value,
                              pos + 1));
     }
+
+    if(target->IsVariableProxy()){
+      static_cast<VariableProxy*>(ret->target())->initializer() = ret;
+    }
+    return ret;
   }
 
   Suspend* NewYield(Expression* expression, int pos,

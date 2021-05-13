@@ -30,6 +30,9 @@
 
 #include <iostream>
 #include <utility>
+#include <climits>
+#include <algorithm>
+#include <vector>
 
 namespace v8 {
 namespace internal {
@@ -1794,13 +1797,15 @@ void BytecodeGenerator::VisitWithStatement(WithStatement* stmt) {
   VisitInScope(stmt->statement(), stmt->scope());
 }
 
-  return static_cast<VariableProxy*>(expr)->var()->mode() == VariableMode::kConst;
+/*
+static std::pair<bool,Smi> IrreducibleSmi(){
+  return std::pair<bool,Smi>(false, Smi::FromInt(0));
 }
 
 static std::pair<bool,Smi> ReduceToSmi(Expression* expr){
-  /* HOLY CRAP CONST IS LIKE FINAL IN JAVA ONLY CONSTANT REFERENCE, CAN I PROPAGATE BACK ?? */
-
-  return static_cast<VariableProxy*>(expr)->var()->mode() == VariableMode::kConst;
+  if(static_cast<VariableProxy*>(expr)->var()->mode() == VariableMode::kConst){
+    return IrreducibleSmi();
+  }
   Expression* iter = expr;
   while(iter->IsVariableProxy()){
     iter = static_cast<VariableProxy*>(iter)->initializer()->value();
@@ -1808,37 +1813,68 @@ static std::pair<bool,Smi> ReduceToSmi(Expression* expr){
   if(iter->IsSmiLiteral()){
     return std::pair<bool,Smi>(true, static_cast<Literal*>(expr)->AsSmiLiteral());
   } else {
-    return std::pair<bool,Smi>(false, Smi::FromInt(0)); // trash value
+    return IrreducibleSmi();
   }
-  return std::pair<bool,Smi>(iter->IsSmiLiteral(), iter--  
 }
 
-bool IsSwitchOptimizable(SwitchStatement* stmt){
-  return false;
-  /*
-  ZonePtrList<CaseClause>* cases = stmt->cases();
+static bool IsSpreadAcceptable(int spread, int ncases){
+  return (spread/ncases) < 3;
+}
 
+static const std::size_t INFO_MIN_IDX = 0;
+static const std::size_t INFO_MAX_IDX = 1;
+
+static std::vector<int> IsSwitchOptimizable(SwitchStatement* stmt){
+  ZonePtrList<CaseClause>* cases = stmt->cases();
   if(cases->length() < 30){
-    return false;
+    return std::vector<int>();
   }
 
   // check spread
+  bool all_cases_const = true;
+  int min = INT_MAX;
+  int max = INT_MIN;
+  std::vector<int> output(cases->length());
 
   for(int i = 0; i<cases->length(); ++i){
-    cases->at(i)
-  }
-  */
-}
+    auto pr = ReduceToSmi(cases->at(i)->label());
+    all_cases_const &= pr.first;
+    int value = pr.second.value();
+    output[i+2] = value;
 
-void EmitJumpTable(SwitchStatement* stmt){
+    min = std::min(min, value);    
+    max = std::max(max, value);    
+  }
+
+  output[INFO_MIN_IDX] = min;
+  output[INFO_MAX_IDX] = max;
+
+  if(all_cases_const && IsSpreadAcceptable(max-min, cases->length())){
+    output.clear();
+  }
+
+  return output;
+}
+*/
+
+static void EmitJumpTable(BytecodeGenerator* bg, SwitchStatement* stmt, std::vector<int>& info){
+  /*
+  BytecodeJumpTable* jump_table = bg->builder()->AllocateJumpTable(1+info.size(), info[INFO_MIN_IDX]);
+  for(std::size_t i = 2; i<info.size(); ++i){
+    bg->builder()->Bind(jump_table, info[i]); 
+  }
+  bg->builder()->OutputSwitchOnSmiNoFeedback(jump_table);
+  */
 }
 
 void BytecodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
   // We need this scope because we visit for register values. We have to
   // maintain a execution result scope where registers can be allocated.
   ZonePtrList<CaseClause>* clauses = stmt->cases();
-  if (IsSwitchOptimizable(stmt)) {
-    EmitJumpTable(stmt);
+  //std::vector<int> info = IsSwitchOptimizable(stmt);
+  if ((true)) { //info.size() > 0) {
+    std::vector<int> info;
+    EmitJumpTable(this, stmt, info);
   } else {
     SwitchBuilder switch_builder(builder(), block_coverage_builder_, stmt,
                                  clauses->length());
