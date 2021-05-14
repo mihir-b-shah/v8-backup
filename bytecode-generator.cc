@@ -1828,7 +1828,7 @@ static bool IsSpreadAcceptable(int spread, int ncases){
 static const std::size_t INFO_MIN_IDX = 0;
 static const std::size_t INFO_MAX_IDX = 1;
 
-static void IsSwitchOptimizable(SwitchStatement* stmt, std::vector<unsigned>& info){
+static void IsSwitchOptimizable(SwitchStatement* stmt, std::vector<int>& info){
   ZonePtrList<CaseClause>* cases = stmt->cases();
   if(cases->length() < 1){ // how many cases is right?
     info.clear();
@@ -1837,8 +1837,8 @@ static void IsSwitchOptimizable(SwitchStatement* stmt, std::vector<unsigned>& in
 
   // check spread
   bool all_cases_const = true;
-  int min = UINT_MAX;
-  int max = 0;
+  int min = INT_MAX;
+  int max = INT_MIN;
 
   info.resize(2+(cases->length()));
 
@@ -1873,7 +1873,7 @@ void BytecodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
   // We need this scope because we visit for register values. We have to
   // maintain a execution result scope where registers can be allocated.
   ZonePtrList<CaseClause>* clauses = stmt->cases();
-  std::vector<unsigned> info;
+  std::vector<int> info;
   IsSwitchOptimizable(stmt, info);
   if(info.size() > 0) {
     BytecodeJumpTable* jump_table = builder()->AllocateJumpTable(info[INFO_MAX_IDX]-info[INFO_MIN_IDX]+1, 
@@ -1884,14 +1884,11 @@ void BytecodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
     builder()->SetStatementPosition(stmt);
 
     // Keep the switch value in a register until a case matches.
-    std::cout << __LINE__ << '\n';
     VisitForAccumulatorValue(stmt->tag());
-    std::cout << __LINE__ << '\n';
     builder()->SwitchOnSmiNoFeedback(jump_table);
 
-    unsigned v_idx = 2;
-    for(unsigned i = info[INFO_MIN_IDX]; i<=info[INFO_MAX_IDX]; ++i){
-      std::cout << "LINE: " << i << '\n';
+    int v_idx = 2;
+    for(int i = info[INFO_MIN_IDX]; i<=info[INFO_MAX_IDX]; ++i){
       if(info[v_idx] == i){
         jtbl_builder.SetCaseTarget(i, clauses->at(v_idx-2));
         VisitStatements(clauses->at(v_idx-2)->statements());
