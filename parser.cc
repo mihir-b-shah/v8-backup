@@ -544,8 +544,10 @@ void Parser::ParseProgram(Isolate* isolate, Handle<Script> script,
   scanner_.Initialize();
   FunctionLiteral* result = DoParseProgram(isolate, info);
 
+  /*
   AstPrinter printer(1000);
   std::cout << printer.PrintProgram(result) << '\n';
+  */
 
   MaybeResetCharacterStream(info, result);
   MaybeProcessSourceRanges(info, result, stack_limit_);

@@ -1417,8 +1417,6 @@ class VariableProxy final : public Expression {
     return is_resolved() ? var_->raw_name() : raw_name_;
   }
 
-  Assignment*& initializer(){return initializer_;} 
-
   Variable* var() const {
     DCHECK(is_resolved());
     return var_;
@@ -3185,7 +3183,10 @@ class AstNodeFactory final {
     }
 
     if(target->IsVariableProxy()){
-      static_cast<VariableProxy*>(ret->target())->initializer() = ret;
+      VariableProxy* vp = static_cast<VariableProxy*>(target);
+      if(vp->is_resolved()){
+        vp->var()->initializer() = ret;
+      }
     }
     return ret;
   }

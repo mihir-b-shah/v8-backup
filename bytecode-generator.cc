@@ -1797,20 +1797,24 @@ void BytecodeGenerator::VisitWithStatement(WithStatement* stmt) {
   VisitInScope(stmt->statement(), stmt->scope());
 }
 
-/*
 static std::pair<bool,Smi> IrreducibleSmi(){
   return std::pair<bool,Smi>(false, Smi::FromInt(0));
 }
 
 static std::pair<bool,Smi> ReduceToSmi(Expression* expr){
-  if(static_cast<VariableProxy*>(expr)->var()->mode() == VariableMode::kConst){
-    return IrreducibleSmi();
+  if(expr->IsVariableProxy()){
+    if(static_cast<VariableProxy*>(expr)->var()->mode() != VariableMode::kConst){
+      return IrreducibleSmi();
+    }
+    Assignment* iter = static_cast<VariableProxy*>(expr)->var()->initializer();
+    if(iter == nullptr){
+      return IrreducibleSmi();
+    } else {
+      expr = iter->value();
+    }
   }
-  Expression* iter = expr;
-  while(iter->IsVariableProxy()){
-    iter = static_cast<VariableProxy*>(iter)->initializer()->value();
-  }
-  if(iter->IsSmiLiteral()){
+
+  if(expr->IsSmiLiteral()){
     return std::pair<bool,Smi>(true, static_cast<Literal*>(expr)->AsSmiLiteral());
   } else {
     return IrreducibleSmi();
@@ -1824,57 +1828,79 @@ static bool IsSpreadAcceptable(int spread, int ncases){
 static const std::size_t INFO_MIN_IDX = 0;
 static const std::size_t INFO_MAX_IDX = 1;
 
-static std::vector<int> IsSwitchOptimizable(SwitchStatement* stmt){
+static void IsSwitchOptimizable(SwitchStatement* stmt, std::vector<unsigned>& info){
   ZonePtrList<CaseClause>* cases = stmt->cases();
-  if(cases->length() < 30){
-    return std::vector<int>();
+  if(cases->length() < 1){ // how many cases is right?
+    info.clear();
+    return;
   }
 
   // check spread
   bool all_cases_const = true;
-  int min = INT_MAX;
-  int max = INT_MIN;
-  std::vector<int> output(cases->length());
+  int min = UINT_MAX;
+  int max = 0;
+
+  info.resize(2+(cases->length()));
 
   for(int i = 0; i<cases->length(); ++i){
+    if(cases->at(i)->is_default()){
+      info.clear();
+      return;
+    }
     auto pr = ReduceToSmi(cases->at(i)->label());
-    all_cases_const &= pr.first;
+    if(!(pr.first)){
+      info.clear();
+      return;
+    }
+
     int value = pr.second.value();
-    output[i+2] = value;
+    info[i+2] = value;
 
     min = std::min(min, value);    
     max = std::max(max, value);    
   }
 
-  output[INFO_MIN_IDX] = min;
-  output[INFO_MAX_IDX] = max;
+  info[INFO_MIN_IDX] = min;
+  info[INFO_MAX_IDX] = max;
 
-  if(all_cases_const && IsSpreadAcceptable(max-min, cases->length())){
-    output.clear();
+  if(!(all_cases_const && IsSpreadAcceptable(max-min, cases->length()))){
+    info.clear();
+    return;
   }
-
-  return output;
-}
-*/
-
-static void EmitJumpTable(BytecodeGenerator* bg, SwitchStatement* stmt, std::vector<int>& info){
-  /*
-  BytecodeJumpTable* jump_table = bg->builder()->AllocateJumpTable(1+info.size(), info[INFO_MIN_IDX]);
-  for(std::size_t i = 2; i<info.size(); ++i){
-    bg->builder()->Bind(jump_table, info[i]); 
-  }
-  bg->builder()->OutputSwitchOnSmiNoFeedback(jump_table);
-  */
 }
 
 void BytecodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
   // We need this scope because we visit for register values. We have to
   // maintain a execution result scope where registers can be allocated.
   ZonePtrList<CaseClause>* clauses = stmt->cases();
-  //std::vector<int> info = IsSwitchOptimizable(stmt);
-  if ((true)) { //info.size() > 0) {
-    std::vector<int> info;
-    EmitJumpTable(this, stmt, info);
+  std::vector<unsigned> info;
+  IsSwitchOptimizable(stmt, info);
+  if(info.size() > 0) {
+    BytecodeJumpTable* jump_table = builder()->AllocateJumpTable(info[INFO_MAX_IDX]-info[INFO_MIN_IDX]+1, 
+                                                                 info[INFO_MIN_IDX]);
+    JmpTblBuilder jtbl_builder(builder(), block_coverage_builder_, stmt,
+                                 clauses->length(), jump_table);
+    ControlScopeForBreakable scope(this, stmt, &jtbl_builder);
+    builder()->SetStatementPosition(stmt);
+
+    // Keep the switch value in a register until a case matches.
+    std::cout << __LINE__ << '\n';
+    VisitForAccumulatorValue(stmt->tag());
+    std::cout << __LINE__ << '\n';
+    builder()->SwitchOnSmiNoFeedback(jump_table);
+
+    unsigned v_idx = 2;
+    for(unsigned i = info[INFO_MIN_IDX]; i<=info[INFO_MAX_IDX]; ++i){
+      std::cout << "LINE: " << i << '\n';
+      if(info[v_idx] == i){
+        jtbl_builder.SetCaseTarget(i, clauses->at(v_idx-2));
+        VisitStatements(clauses->at(v_idx-2)->statements());
+        ++v_idx;
+      } else {
+        jtbl_builder.SetCaseTarget(i, nullptr);
+      }
+      jtbl_builder.AddEndJump();
+    }
   } else {
     SwitchBuilder switch_builder(builder(), block_coverage_builder_, stmt,
                                  clauses->length());
