@@ -201,8 +201,18 @@ class V8_EXPORT_PRIVATE JmpTblBuilder final
                                                      SourceRangeKind::kBody);
     }
   }
+  
+  void BindDefault(){
+    builder()->Bind(&default_);
+  }  
+
+  void JumpToDefault(){
+    builder()->Jump(&default_);
+  } 
+
  private:
   BytecodeJumpTable* jtbl;
+  BytecodeLabel default_;
 };
 
 // A class to help with co-ordinating control flow in try-catch statements.

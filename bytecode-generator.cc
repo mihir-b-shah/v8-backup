@@ -1828,9 +1828,11 @@ static bool IsSpreadAcceptable(int spread, int ncases){
 static const std::size_t INFO_MIN_IDX = 0;
 static const std::size_t INFO_MAX_IDX = 1;
 
-static void IsSwitchOptimizable(SwitchStatement* stmt, std::vector<int>& info){
+static const int DEFAULT_NOT_FOUND = -1;
+
+static void IsSwitchOptimizable(SwitchStatement* stmt, std::vector<int>& info, int& default_case){
   ZonePtrList<CaseClause>* cases = stmt->cases();
-  if(cases->length() < 1){ // how many cases is right?
+  if(cases->length() < 5){ // how many cases is right?
     info.clear();
     return;
   }
@@ -1844,8 +1846,8 @@ static void IsSwitchOptimizable(SwitchStatement* stmt, std::vector<int>& info){
 
   for(int i = 0; i<cases->length(); ++i){
     if(cases->at(i)->is_default()){
-      info.clear();
-      return;
+      default_case = i;
+      continue;
     }
     auto pr = ReduceToSmi(cases->at(i)->label());
     if(!(pr.first)){
@@ -1867,14 +1869,19 @@ static void IsSwitchOptimizable(SwitchStatement* stmt, std::vector<int>& info){
     info.clear();
     return;
   }
+
+  default_case = DEFAULT_NOT_FOUND;
 }
 
 void BytecodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
   // We need this scope because we visit for register values. We have to
   // maintain a execution result scope where registers can be allocated.
   ZonePtrList<CaseClause>* clauses = stmt->cases();
+
   std::vector<int> info;
-  IsSwitchOptimizable(stmt, info);
+  int default_case;
+
+  IsSwitchOptimizable(stmt, info, default_case);
   if(info.size() > 0) {
     BytecodeJumpTable* jump_table = builder()->AllocateJumpTable(info[INFO_MAX_IDX]-info[INFO_MIN_IDX]+1, 
                                                                  info[INFO_MIN_IDX]);
@@ -1883,25 +1890,34 @@ void BytecodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
     ControlScopeForBreakable scope(this, stmt, &jtbl_builder);
     builder()->SetStatementPosition(stmt);
 
-    // Keep the switch value in a register until a case matches.
     VisitForAccumulatorValue(stmt->tag());
     builder()->SwitchOnSmiNoFeedback(jump_table);
 
-    for(int i = 0; i<clauses->length(); ++i){
-      jtbl_builder.SetCaseTarget(info[2+i], clauses->at(i));
-      VisitStatements(clauses->at(i)->statements());
+    if(default_case == DEFAULT_NOT_FOUND){
+      jtbl_builder.Break();
+    } else {
+      // jump to the default label
+      jtbl_builder.JumpToDefault(); 
     }
 
-    // fill in empty labels 
-    std::sort(info.begin()+2, info.end());
-    int v_idx = 2;
+    std::vector<int> sorted_info(info.begin()+2, info.end());
+    std::sort(sorted_info.begin(), sorted_info.end());
 
-    for(int i = info[INFO_MIN_IDX]; i<=info[INFO_MAX_IDX]; ++i){
-      if(info[v_idx] == i){
-        ++v_idx;
-        continue;
-      }  
-      jtbl_builder.SetCaseTarget(i, nullptr);
+    for(int i = 0; i<clauses->length(); ++i){
+      if(i != default_case){
+        jtbl_builder.SetCaseTarget(info[2+i], clauses->at(i));
+      } else {
+        jtbl_builder.BindDefault();
+        int v_idx = 0;
+        for(int j = info[INFO_MIN_IDX]; j<=info[INFO_MAX_IDX]; ++j){
+          if(sorted_info[v_idx] == j){
+            ++v_idx;
+            continue;
+          }  
+          jtbl_builder.SetCaseTarget(j, nullptr);
+        }
+      }
+      VisitStatements(clauses->at(i)->statements());
     }
   } else {
     SwitchBuilder switch_builder(builder(), block_coverage_builder_, stmt,
