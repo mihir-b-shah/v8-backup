@@ -201,12 +201,6 @@ class V8_EXPORT_PRIVATE JmpTblBuilder final
                                                      SourceRangeKind::kBody);
     }
   }
-
-  void AddEndJump(){
-    // TODO: fill this jump with the appropriate value from break_labels_
-    EmitJump(this->break_labels());
-  }
-
  private:
   BytecodeJumpTable* jtbl;
 };

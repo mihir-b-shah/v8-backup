@@ -1887,16 +1887,21 @@ void BytecodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
     VisitForAccumulatorValue(stmt->tag());
     builder()->SwitchOnSmiNoFeedback(jump_table);
 
+    for(int i = 0; i<clauses->length(); ++i){
+      jtbl_builder.SetCaseTarget(info[2+i], clauses->at(i));
+      VisitStatements(clauses->at(i)->statements());
+    }
+
+    // fill in empty labels 
+    std::sort(info.begin()+2, info.end());
     int v_idx = 2;
+
     for(int i = info[INFO_MIN_IDX]; i<=info[INFO_MAX_IDX]; ++i){
       if(info[v_idx] == i){
-        jtbl_builder.SetCaseTarget(i, clauses->at(v_idx-2));
-        VisitStatements(clauses->at(v_idx-2)->statements());
         ++v_idx;
-      } else {
-        jtbl_builder.SetCaseTarget(i, nullptr);
-      }
-      jtbl_builder.AddEndJump();
+        continue;
+      }  
+      jtbl_builder.SetCaseTarget(i, nullptr);
     }
   } else {
     SwitchBuilder switch_builder(builder(), block_coverage_builder_, stmt,
