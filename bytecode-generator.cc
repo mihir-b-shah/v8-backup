@@ -33,6 +33,7 @@
 #include <climits>
 #include <algorithm>
 #include <vector>
+#include <unordered_set>
 
 namespace v8 {
 namespace internal {
@@ -1830,7 +1831,8 @@ static const std::size_t INFO_MAX_IDX = 1;
 
 static const int DEFAULT_NOT_FOUND = -1;
 
-static void IsSwitchOptimizable(SwitchStatement* stmt, std::vector<int>& info, int& default_case){
+static void IsSwitchOptimizable(SwitchStatement* stmt, std::vector<int>& info, 
+                                std::unordered_set<int>& covered_cases, int& default_case){
   ZonePtrList<CaseClause>* cases = stmt->cases();
   if(cases->length() < 5){ // how many cases is right?
     info.clear();
@@ -1856,6 +1858,7 @@ static void IsSwitchOptimizable(SwitchStatement* stmt, std::vector<int>& info, i
     }
 
     int value = pr.second.value();
+    covered_cases.insert(value);
     info[i+2] = value;
 
     min = std::min(min, value);    
@@ -1869,8 +1872,6 @@ static void IsSwitchOptimizable(SwitchStatement* stmt, std::vector<int>& info, i
     info.clear();
     return;
   }
-
-  default_case = DEFAULT_NOT_FOUND;
 }
 
 void BytecodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
@@ -1879,9 +1880,10 @@ void BytecodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
   ZonePtrList<CaseClause>* clauses = stmt->cases();
 
   std::vector<int> info;
-  int default_case;
+  std::unordered_set<int> covered_cases;
+  int default_case = DEFAULT_NOT_FOUND;
 
-  IsSwitchOptimizable(stmt, info, default_case);
+  IsSwitchOptimizable(stmt, info, covered_cases, default_case);
   if(info.size() > 0) {
     BytecodeJumpTable* jump_table = builder()->AllocateJumpTable(info[INFO_MAX_IDX]-info[INFO_MIN_IDX]+1, 
                                                                  info[INFO_MIN_IDX]);
@@ -1890,7 +1892,21 @@ void BytecodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
     ControlScopeForBreakable scope(this, stmt, &jtbl_builder);
     builder()->SetStatementPosition(stmt);
 
+    // check whether fits in smi
     VisitForAccumulatorValue(stmt->tag());
+
+    Register x = register_allocator()->NewRegister();
+    builder()->StoreAccumulatorInRegister(x);
+    
+    FeedbackSlot slot_or = feedback_spec()->AddCompareICSlot();
+    builder()->BinaryOperationSmiLiteral(Token::Value::BIT_OR, Smi::FromInt(0), feedback_index(slot_or));
+    Register xr0 = register_allocator()->NewRegister();
+    builder()->StoreAccumulatorInRegister(xr0);
+
+    FeedbackSlot slot_eq = feedback_spec()->AddCompareICSlot();
+    builder()->CompareOperation(Token::Value::EQ_STRICT, x, feedback_index(slot_eq));
+    jtbl_builder.FallThroughIfTrue(default_case != DEFAULT_NOT_FOUND);
+    builder()->LoadAccumulatorWithRegister(xr0);
     builder()->SwitchOnSmiNoFeedback(jump_table);
 
     if(default_case == DEFAULT_NOT_FOUND){
@@ -1900,22 +1916,17 @@ void BytecodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
       jtbl_builder.JumpToDefault(); 
     }
 
-    std::vector<int> sorted_info(info.begin()+2, info.end());
-    std::sort(sorted_info.begin(), sorted_info.end());
-
     for(int i = 0; i<clauses->length(); ++i){
       if(i != default_case){
         jtbl_builder.SetCaseTarget(info[2+i], clauses->at(i));
       } else {
-        jtbl_builder.BindDefault();
-        int v_idx = 0;
+        // guaranteed to occur only once
         for(int j = info[INFO_MIN_IDX]; j<=info[INFO_MAX_IDX]; ++j){
-          if(sorted_info[v_idx] == j){
-            ++v_idx;
-            continue;
+          if(covered_cases.find(j) == covered_cases.end()){
+            jtbl_builder.SetCaseTarget(j, nullptr);
           }  
-          jtbl_builder.SetCaseTarget(j, nullptr);
         }
+        jtbl_builder.BindDefault();
       }
       VisitStatements(clauses->at(i)->statements());
     }

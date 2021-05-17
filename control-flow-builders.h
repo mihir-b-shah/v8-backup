@@ -187,10 +187,12 @@ class V8_EXPORT_PRIVATE JmpTblBuilder final
   JmpTblBuilder(BytecodeArrayBuilder* builder,
                 BlockCoverageBuilder* block_coverage_builder,
                 SwitchStatement* statement, int number_of_cases, BytecodeJumpTable* jtbl)
-      : BreakableControlFlowBuilder(builder, block_coverage_builder, statement) {
+      : BreakableControlFlowBuilder(builder, block_coverage_builder, statement),
+        default_(builder->zone()) {
     this->jtbl = jtbl;
   }
-  ~JmpTblBuilder() override {}
+  ~JmpTblBuilder() override {
+  }
 
   // This method should be called by the SwitchBuilder owner when the case
   // statement with |index| is emitted to update the case jump site.
@@ -201,18 +203,27 @@ class V8_EXPORT_PRIVATE JmpTblBuilder final
                                                      SourceRangeKind::kBody);
     }
   }
-  
+
   void BindDefault(){
-    builder()->Bind(&default_);
-  }  
+    default_.Bind(builder());
+  }
 
   void JumpToDefault(){
-    builder()->Jump(&default_);
+    this->EmitJump(&default_);
   } 
+  
+  void FallThroughIfTrue(bool use_default){
+    if(use_default){
+      this->EmitJumpIfFalse(BytecodeArrayBuilder::ToBooleanMode::kAlreadyBoolean, &default_);
+    } else {
+      this->BreakIfFalse(BytecodeArrayBuilder::ToBooleanMode::kAlreadyBoolean);
+    }
+  }   
+
 
  private:
   BytecodeJumpTable* jtbl;
-  BytecodeLabel default_;
+  BytecodeLabels default_;
 };
 
 // A class to help with co-ordinating control flow in try-catch statements.
