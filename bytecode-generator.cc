@@ -1895,6 +1895,7 @@ void BytecodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
     // check whether fits in smi
     VisitForAccumulatorValue(stmt->tag());
 
+    /*
     Register x = register_allocator()->NewRegister();
     builder()->StoreAccumulatorInRegister(x);
     
@@ -1907,6 +1908,8 @@ void BytecodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
     builder()->CompareOperation(Token::Value::EQ_STRICT, x, feedback_index(slot_eq));
     jtbl_builder.FallThroughIfTrue(default_case != DEFAULT_NOT_FOUND);
     builder()->LoadAccumulatorWithRegister(xr0);
+    */
+
     builder()->SwitchOnSmiNoFeedback(jump_table);
 
     if(default_case == DEFAULT_NOT_FOUND){
