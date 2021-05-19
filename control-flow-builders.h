@@ -5,10 +5,9 @@
 #ifndef V8_INTERPRETER_CONTROL_FLOW_BUILDERS_H_
 #define V8_INTERPRETER_CONTROL_FLOW_BUILDERS_H_
 
-#include "src/interpreter/bytecode-array-builder.h"
-
 #include "src/ast/ast-source-ranges.h"
 #include "src/interpreter/block-coverage-builder.h"
+#include "src/interpreter/bytecode-array-builder.h"
 #include "src/interpreter/bytecode-generator.h"
 #include "src/interpreter/bytecode-jump-table.h"
 #include "src/interpreter/bytecode-label.h"
@@ -186,40 +185,36 @@ class V8_EXPORT_PRIVATE JmpTblBuilder final
  public:
   JmpTblBuilder(BytecodeArrayBuilder* builder,
                 BlockCoverageBuilder* block_coverage_builder,
-                SwitchStatement* statement, int number_of_cases, BytecodeJumpTable* jtbl)
+                SwitchStatement* statement, int number_of_cases,
+                BytecodeJumpTable* jtbl)
       : BreakableControlFlowBuilder(builder, block_coverage_builder, statement),
         default_(builder->zone()) {
     this->jtbl = jtbl;
   }
-  ~JmpTblBuilder() override {
-  }
+  ~JmpTblBuilder() override {}
 
   // This method should be called by the SwitchBuilder owner when the case
   // statement with |index| is emitted to update the case jump site.
-  void SetCaseTarget(unsigned case_label, CaseClause* clause){
-    builder()->Bind(jtbl, case_label); 
+  void SetCaseTarget(unsigned case_label, CaseClause* clause) {
+    builder()->Bind(jtbl, case_label);
     if (block_coverage_builder_) {
       block_coverage_builder_->IncrementBlockCounter(clause,
                                                      SourceRangeKind::kBody);
     }
   }
 
-  void BindDefault(){
-    default_.Bind(builder());
-  }
+  void BindDefault() { default_.Bind(builder()); }
 
-  void JumpToDefault(){
-    this->EmitJump(&default_);
-  } 
-  
-  void FallThroughIfTrue(bool use_default){
-    if(use_default){
-      this->EmitJumpIfFalse(BytecodeArrayBuilder::ToBooleanMode::kAlreadyBoolean, &default_);
+  void JumpToDefault() { this->EmitJump(&default_); }
+
+  void FallThroughIfTrue(bool use_default) {
+    if (use_default) {
+      this->EmitJumpIfFalse(
+          BytecodeArrayBuilder::ToBooleanMode::kAlreadyBoolean, &default_);
     } else {
       this->BreakIfFalse(BytecodeArrayBuilder::ToBooleanMode::kAlreadyBoolean);
     }
-  }   
-
+  }
 
  private:
   BytecodeJumpTable* jtbl;

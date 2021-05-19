@@ -4,8 +4,16 @@
 
 #include "src/interpreter/bytecode-generator.h"
 
+#include <algorithm>
+#include <climits>
+#include <iostream>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
 #include "src/api/api-inl.h"
 #include "src/ast/ast-source-ranges.h"
+#include "src/ast/ast.h"
 #include "src/ast/scopes.h"
 #include "src/builtins/builtins-constructor.h"
 #include "src/codegen/compiler.h"
@@ -27,13 +35,6 @@
 #include "src/parsing/parse-info.h"
 #include "src/parsing/token.h"
 #include "src/utils/ostreams.h"
-
-#include <iostream>
-#include <utility>
-#include <climits>
-#include <algorithm>
-#include <vector>
-#include <unordered_set>
 
 namespace v8 {
 namespace internal {
@@ -746,11 +747,11 @@ class V8_NODISCARD BytecodeGenerator::TestResultScope final
 // Used to build a list of toplevel declaration data.
 class BytecodeGenerator::TopLevelDeclarationsBuilder final : public ZoneObject {
  public:
-  template <typename LocalIsolate>
+  template <typename IsolateT>
   Handle<FixedArray> AllocateDeclarations(UnoptimizedCompilationInfo* info,
                                           BytecodeGenerator* generator,
                                           Handle<Script> script,
-                                          LocalIsolate* isolate) {
+                                          IsolateT* isolate) {
     DCHECK(has_constant_pool_entry_);
 
     Handle<FixedArray> data =
@@ -1193,14 +1194,14 @@ using NullContextScopeFor = typename NullContextScopeHelper<Isolate>::Type;
 
 }  // namespace
 
-template <typename LocalIsolate>
+template <typename IsolateT>
 Handle<BytecodeArray> BytecodeGenerator::FinalizeBytecode(
-    LocalIsolate* isolate, Handle<Script> script) {
+    IsolateT* isolate, Handle<Script> script) {
   DCHECK_EQ(ThreadId::Current(), isolate->thread_id());
 #ifdef DEBUG
   // Unoptimized compilation should be context-independent. Verify that we don't
   // access the native context by nulling it out during finalization.
-  NullContextScopeFor<LocalIsolate> null_context_scope(isolate);
+  NullContextScopeFor<IsolateT> null_context_scope(isolate);
 #endif
 
   AllocateDeferredConstants(isolate, script);
@@ -1231,14 +1232,14 @@ template Handle<BytecodeArray> BytecodeGenerator::FinalizeBytecode(
 template Handle<BytecodeArray> BytecodeGenerator::FinalizeBytecode(
     LocalIsolate* isolate, Handle<Script> script);
 
-template <typename LocalIsolate>
+template <typename IsolateT>
 Handle<ByteArray> BytecodeGenerator::FinalizeSourcePositionTable(
-    LocalIsolate* isolate) {
+    IsolateT* isolate) {
   DCHECK_EQ(ThreadId::Current(), isolate->thread_id());
 #ifdef DEBUG
   // Unoptimized compilation should be context-independent. Verify that we don't
   // access the native context by nulling it out during finalization.
-  NullContextScopeFor<LocalIsolate> null_context_scope(isolate);
+  NullContextScopeFor<IsolateT> null_context_scope(isolate);
 #endif
 
   Handle<ByteArray> source_position_table =
@@ -1263,8 +1264,8 @@ int BytecodeGenerator::CheckBytecodeMatches(BytecodeArray bytecode) {
 }
 #endif
 
-template <typename LocalIsolate>
-void BytecodeGenerator::AllocateDeferredConstants(LocalIsolate* isolate,
+template <typename IsolateT>
+void BytecodeGenerator::AllocateDeferredConstants(IsolateT* isolate,
                                                   Handle<Script> script) {
   if (top_level_builder()->has_top_level_declaration()) {
     // Build global declaration pair array.
@@ -1781,7 +1782,7 @@ void BytecodeGenerator::VisitReturnStatement(ReturnStatement* stmt) {
   builder()->SetStatementPosition(stmt);
   VisitForAccumulatorValue(stmt->expression());
   int return_position = stmt->end_position();
-  if (return_position == kNoSourcePosition) {
+  if (return_position == ReturnStatement::kFunctionLiteralReturnPosition) {
     return_position = info()->literal()->return_position();
   }
   if (stmt->is_async_return()) {
@@ -1798,32 +1799,34 @@ void BytecodeGenerator::VisitWithStatement(WithStatement* stmt) {
   VisitInScope(stmt->statement(), stmt->scope());
 }
 
-static std::pair<bool,Smi> IrreducibleSmi(){
-  return std::pair<bool,Smi>(false, Smi::FromInt(0));
+static inline std::pair<bool, Smi> IrreducibleSmi() {
+  return std::pair<bool, Smi>(false, Smi::FromInt(0));
 }
 
-static std::pair<bool,Smi> ReduceToSmi(Expression* expr){
-  if(expr->IsVariableProxy()){
-    if(static_cast<VariableProxy*>(expr)->var()->mode() != VariableMode::kConst){
+static std::pair<bool, Smi> ReduceToSmi(Expression* expr) {
+  if (expr->IsVariableProxy()) {
+    if (static_cast<VariableProxy*>(expr)->var()->mode() !=
+        VariableMode::kConst) {
       return IrreducibleSmi();
     }
     Assignment* iter = static_cast<VariableProxy*>(expr)->var()->initializer();
-    if(iter == nullptr){
+    if (iter == nullptr) {
       return IrreducibleSmi();
     } else {
       expr = iter->value();
     }
   }
 
-  if(expr->IsSmiLiteral()){
-    return std::pair<bool,Smi>(true, static_cast<Literal*>(expr)->AsSmiLiteral());
+  if (expr->IsSmiLiteral()) {
+    return std::pair<bool, Smi>(true,
+                                static_cast<Literal*>(expr)->AsSmiLiteral());
   } else {
     return IrreducibleSmi();
   }
 }
 
-static bool IsSpreadAcceptable(int spread, int ncases){
-  return (spread/ncases) < 3;
+static inline bool IsSpreadAcceptable(int spread, int ncases) {
+  return (spread / ncases) < 3;
 }
 
 static const std::size_t INFO_MIN_IDX = 0;
@@ -1831,10 +1834,11 @@ static const std::size_t INFO_MAX_IDX = 1;
 
 static const int DEFAULT_NOT_FOUND = -1;
 
-static void IsSwitchOptimizable(SwitchStatement* stmt, std::vector<int>& info, 
-                                std::unordered_set<int>& covered_cases, int& default_case){
+static void IsSwitchOptimizable(SwitchStatement* stmt, std::vector<int>& info,
+                                std::unordered_set<int>& covered_cases,
+                                int& default_case) {
   ZonePtrList<CaseClause>* cases = stmt->cases();
-  if(cases->length() < 5){ // how many cases is right?
+  if (cases->length() < 5) {  // how many cases is right?
     info.clear();
     return;
   }
@@ -1844,31 +1848,31 @@ static void IsSwitchOptimizable(SwitchStatement* stmt, std::vector<int>& info,
   int min = INT_MAX;
   int max = INT_MIN;
 
-  info.resize(2+(cases->length()));
+  info.resize(2 + (cases->length()));
 
-  for(int i = 0; i<cases->length(); ++i){
-    if(cases->at(i)->is_default()){
+  for (int i = 0; i < cases->length(); ++i) {
+    if (cases->at(i)->is_default()) {
       default_case = i;
       continue;
     }
     auto pr = ReduceToSmi(cases->at(i)->label());
-    if(!(pr.first)){
+    if (!(pr.first)) {
       info.clear();
       return;
     }
 
     int value = pr.second.value();
     covered_cases.insert(value);
-    info[i+2] = value;
+    info[i + 2] = value;
 
-    min = std::min(min, value);    
-    max = std::max(max, value);    
+    min = std::min(min, value);
+    max = std::max(max, value);
   }
 
   info[INFO_MIN_IDX] = min;
   info[INFO_MAX_IDX] = max;
 
-  if(!(all_cases_const && IsSpreadAcceptable(max-min, cases->length()))){
+  if (!(all_cases_const && IsSpreadAcceptable(max - min, cases->length()))) {
     info.clear();
     return;
   }
@@ -1884,50 +1888,34 @@ void BytecodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
   int default_case = DEFAULT_NOT_FOUND;
 
   IsSwitchOptimizable(stmt, info, covered_cases, default_case);
-  if(info.size() > 0) {
-    BytecodeJumpTable* jump_table = builder()->AllocateJumpTable(info[INFO_MAX_IDX]-info[INFO_MIN_IDX]+1, 
-                                                                 info[INFO_MIN_IDX]);
+  if (info.size() > 0) {
+    BytecodeJumpTable* jump_table = builder()->AllocateJumpTable(
+        info[INFO_MAX_IDX] - info[INFO_MIN_IDX] + 1, info[INFO_MIN_IDX]);
     JmpTblBuilder jtbl_builder(builder(), block_coverage_builder_, stmt,
-                                 clauses->length(), jump_table);
+                               clauses->length(), jump_table);
     ControlScopeForBreakable scope(this, stmt, &jtbl_builder);
     builder()->SetStatementPosition(stmt);
 
     // check whether fits in smi
     VisitForAccumulatorValue(stmt->tag());
-
-    /*
-    Register x = register_allocator()->NewRegister();
-    builder()->StoreAccumulatorInRegister(x);
-    
-    FeedbackSlot slot_or = feedback_spec()->AddCompareICSlot();
-    builder()->BinaryOperationSmiLiteral(Token::Value::BIT_OR, Smi::FromInt(0), feedback_index(slot_or));
-    Register xr0 = register_allocator()->NewRegister();
-    builder()->StoreAccumulatorInRegister(xr0);
-
-    FeedbackSlot slot_eq = feedback_spec()->AddCompareICSlot();
-    builder()->CompareOperation(Token::Value::EQ_STRICT, x, feedback_index(slot_eq));
-    jtbl_builder.FallThroughIfTrue(default_case != DEFAULT_NOT_FOUND);
-    builder()->LoadAccumulatorWithRegister(xr0);
-    */
-
     builder()->SwitchOnSmiNoFeedback(jump_table);
 
-    if(default_case == DEFAULT_NOT_FOUND){
+    if (default_case == DEFAULT_NOT_FOUND) {
       jtbl_builder.Break();
     } else {
       // jump to the default label
-      jtbl_builder.JumpToDefault(); 
+      jtbl_builder.JumpToDefault();
     }
 
-    for(int i = 0; i<clauses->length(); ++i){
-      if(i != default_case){
-        jtbl_builder.SetCaseTarget(info[2+i], clauses->at(i));
+    for (int i = 0; i < clauses->length(); ++i) {
+      if (i != default_case) {
+        jtbl_builder.SetCaseTarget(info[2 + i], clauses->at(i));
       } else {
         // guaranteed to occur only once
-        for(int j = info[INFO_MIN_IDX]; j<=info[INFO_MAX_IDX]; ++j){
-          if(covered_cases.find(j) == covered_cases.end()){
+        for (int j = info[INFO_MIN_IDX]; j <= info[INFO_MAX_IDX]; ++j) {
+          if (covered_cases.find(j) == covered_cases.end()) {
             jtbl_builder.SetCaseTarget(j, nullptr);
-          }  
+          }
         }
         jtbl_builder.BindDefault();
       }
@@ -3428,7 +3416,7 @@ void BytecodeGenerator::BuildVariableLoad(Variable* variable,
       break;
     }
     case VariableLocation::REPL_GLOBAL: {
-      DCHECK(variable->IsReplGlobalLet());
+      DCHECK(variable->IsReplGlobal());
       FeedbackSlot slot = GetCachedLoadGlobalICSlot(typeof_mode, variable);
       builder()->LoadGlobal(variable->raw_name(), feedback_index(slot),
                             typeof_mode);
@@ -3617,7 +3605,8 @@ void BytecodeGenerator::BuildVariableAssignment(
       break;
     }
     case VariableLocation::REPL_GLOBAL: {
-      // A let declaration like 'let x = 7' is effectively translated to:
+      // A let or const declaration like 'let x = 7' is effectively translated
+      // to:
       //   <top of the script>:
       //     ScriptContext.x = TheHole;
       //   ...
@@ -3627,19 +3616,23 @@ void BytecodeGenerator::BuildVariableAssignment(
       // The ScriptContext slot for 'x' that we store to here is not
       // necessarily the ScriptContext of this script, but rather the
       // first ScriptContext that has a slot for name 'x'.
-      DCHECK(variable->IsReplGlobalLet());
+      DCHECK(variable->IsReplGlobal());
       if (op == Token::INIT) {
         RegisterList store_args = register_allocator()->NewRegisterList(2);
         builder()
             ->StoreAccumulatorInRegister(store_args[1])
             .LoadLiteral(variable->raw_name())
             .StoreAccumulatorInRegister(store_args[0]);
-        builder()->CallRuntime(Runtime::kStoreGlobalNoHoleCheckForReplLet,
-                               store_args);
+        builder()->CallRuntime(
+            Runtime::kStoreGlobalNoHoleCheckForReplLetOrConst, store_args);
       } else {
-        FeedbackSlot slot =
-            GetCachedStoreGlobalICSlot(language_mode(), variable);
-        builder()->StoreGlobal(variable->raw_name(), feedback_index(slot));
+        if (mode == VariableMode::kConst) {
+          builder()->CallRuntime(Runtime::kThrowConstAssignError);
+        } else {
+          FeedbackSlot slot =
+              GetCachedStoreGlobalICSlot(language_mode(), variable);
+          builder()->StoreGlobal(variable->raw_name(), feedback_index(slot));
+        }
       }
       break;
     }
@@ -5559,7 +5552,7 @@ void BytecodeGenerator::VisitForTypeOfValue(Expression* expr) {
     // perform a non-contextual load in case the operand is a variable proxy.
     VariableProxy* proxy = expr->AsVariableProxy();
     BuildVariableLoadForAccumulatorValue(proxy->var(), proxy->hole_check_mode(),
-                                         INSIDE_TYPEOF);
+                                         TypeofMode::kInside);
   } else {
     VisitForAccumulatorValue(expr);
   }
@@ -6989,7 +6982,7 @@ int BytecodeGenerator::feedback_index(FeedbackSlot slot) const {
 FeedbackSlot BytecodeGenerator::GetCachedLoadGlobalICSlot(
     TypeofMode typeof_mode, Variable* variable) {
   FeedbackSlotCache::SlotKind slot_kind =
-      typeof_mode == INSIDE_TYPEOF
+      typeof_mode == TypeofMode::kInside
           ? FeedbackSlotCache::SlotKind::kLoadGlobalInsideTypeof
           : FeedbackSlotCache::SlotKind::kLoadGlobalNotInsideTypeof;
   FeedbackSlot slot(feedback_slot_cache()->Get(slot_kind, variable));

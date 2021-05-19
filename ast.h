@@ -629,6 +629,11 @@ class ReturnStatement final : public JumpStatement {
     return type() == kSyntheticAsyncReturn;
   }
 
+  // This constant is used to indicate that the return position
+  // from the FunctionLiteral should be used when emitting code.
+  static constexpr int kFunctionLiteralReturnPosition = -2;
+  STATIC_ASSERT(kFunctionLiteralReturnPosition == kNoSourcePosition - 1);
+
   int end_position() const { return end_position_; }
 
  private:
@@ -981,8 +986,8 @@ class Literal final : public Expression {
 
   // Returns an appropriate Object representing this Literal, allocating
   // a heap object if needed.
-  template <typename LocalIsolate>
-  Handle<Object> BuildValue(LocalIsolate* isolate) const;
+  template <typename IsolateT>
+  Handle<Object> BuildValue(IsolateT* isolate) const;
 
   // Support for using Literal as a HashMap key. NOTE: Currently, this works
   // only for string and number literals!
@@ -1053,17 +1058,16 @@ class MaterializedLiteral : public Expression {
   bool NeedsInitialAllocationSite();
 
   // Populate the constant properties/elements fixed array.
-  template <typename LocalIsolate>
-  void BuildConstants(LocalIsolate* isolate);
+  template <typename IsolateT>
+  void BuildConstants(IsolateT* isolate);
 
   // If the expression is a literal, return the literal value;
   // if the expression is a materialized literal and is_simple
   // then return an Array or Object Boilerplate Description
   // Otherwise, return undefined literal as the placeholder
   // in the object literal boilerplate.
-  template <typename LocalIsolate>
-  Handle<Object> GetBoilerplateValue(Expression* expression,
-                                     LocalIsolate* isolate);
+  template <typename IsolateT>
+  Handle<Object> GetBoilerplateValue(Expression* expression, IsolateT* isolate);
 };
 
 // Node for capturing a regexp literal.
@@ -1260,9 +1264,9 @@ class ObjectLiteral final : public AggregateLiteral {
   int InitDepthAndFlags();
 
   // Get the boilerplate description, populating it if necessary.
-  template <typename LocalIsolate>
+  template <typename IsolateT>
   Handle<ObjectBoilerplateDescription> GetOrBuildBoilerplateDescription(
-      LocalIsolate* isolate) {
+      IsolateT* isolate) {
     if (boilerplate_description_.is_null()) {
       BuildBoilerplateDescription(isolate);
     }
@@ -1270,8 +1274,8 @@ class ObjectLiteral final : public AggregateLiteral {
   }
 
   // Populate the boilerplate description.
-  template <typename LocalIsolate>
-  void BuildBoilerplateDescription(LocalIsolate* isolate);
+  template <typename IsolateT>
+  void BuildBoilerplateDescription(IsolateT* isolate);
 
   // Mark all computed expressions that are bound to a key that
   // is shadowed by a later occurrence of the same key. For the
@@ -1361,9 +1365,9 @@ class ArrayLiteral final : public AggregateLiteral {
   int InitDepthAndFlags();
 
   // Get the boilerplate description, populating it if necessary.
-  template <typename LocalIsolate>
+  template <typename IsolateT>
   Handle<ArrayBoilerplateDescription> GetOrBuildBoilerplateDescription(
-      LocalIsolate* isolate) {
+      IsolateT* isolate) {
     if (boilerplate_description_.is_null()) {
       BuildBoilerplateDescription(isolate);
     }
@@ -1371,8 +1375,8 @@ class ArrayLiteral final : public AggregateLiteral {
   }
 
   // Populate the boilerplate description.
-  template <typename LocalIsolate>
-  void BuildBoilerplateDescription(LocalIsolate* isolate);
+  template <typename IsolateT>
+  void BuildBoilerplateDescription(IsolateT* isolate);
 
   // Determines whether the {CreateShallowArrayLiteral} builtin can be used.
   bool IsFastCloningSupported() const;
@@ -1405,8 +1409,6 @@ class ThisExpression final : public Expression {
   friend Zone;
   explicit ThisExpression(int pos) : Expression(pos, kThisExpression) {}
 };
-
-class Assignment;
 
 class VariableProxy final : public Expression {
  public:
@@ -1504,7 +1506,6 @@ class VariableProxy final : public Expression {
                 int start_position)
       : Expression(start_position, kVariableProxy),
         raw_name_(name),
-        initializer_(nullptr), 
         next_unresolved_(nullptr) {
     DCHECK_NE(THIS_VARIABLE, variable_kind);
     bit_field_ |= IsAssignedField::encode(false) |
@@ -1525,7 +1526,6 @@ class VariableProxy final : public Expression {
     const AstRawString* raw_name_;  // if !is_resolved_
     Variable* var_;                 // if is_resolved_
   };
-  Assignment* initializer_;
 
   V8_INLINE VariableProxy** next() { return &next_unresolved_; }
   VariableProxy* next_unresolved_;
@@ -2120,8 +2120,8 @@ class FunctionLiteral final : public Expression {
 
   // Empty handle means that the function does not have a shared name (i.e.
   // the name will be set dynamically after creation of the function closure).
-  template <typename LocalIsolate>
-  MaybeHandle<String> GetName(LocalIsolate* isolate) const {
+  template <typename IsolateT>
+  MaybeHandle<String> GetName(IsolateT* isolate) const {
     return raw_name_ ? raw_name_->AllocateFlat(isolate) : MaybeHandle<String>();
   }
   bool has_shared_name() const { return raw_name_ != nullptr; }
@@ -2643,9 +2643,8 @@ class GetTemplateObject final : public Expression {
     return raw_strings_;
   }
 
-  template <typename LocalIsolate>
-  Handle<TemplateObjectDescription> GetOrBuildDescription(
-      LocalIsolate* isolate);
+  template <typename IsolateT>
+  Handle<TemplateObjectDescription> GetOrBuildDescription(IsolateT* isolate);
 
  private:
   friend class AstNodeFactory;
@@ -2863,20 +2862,22 @@ class AstNodeFactory final {
     return zone_->New<BreakStatement>(target, pos);
   }
 
-  ReturnStatement* NewReturnStatement(Expression* expression, int pos,
-                                      int end_position = kNoSourcePosition) {
+  ReturnStatement* NewReturnStatement(
+      Expression* expression, int pos,
+      int end_position = ReturnStatement::kFunctionLiteralReturnPosition) {
     return zone_->New<ReturnStatement>(expression, ReturnStatement::kNormal,
                                        pos, end_position);
   }
 
-  ReturnStatement* NewAsyncReturnStatement(
-      Expression* expression, int pos, int end_position = kNoSourcePosition) {
+  ReturnStatement* NewAsyncReturnStatement(Expression* expression, int pos,
+                                           int end_position) {
     return zone_->New<ReturnStatement>(
         expression, ReturnStatement::kAsyncReturn, pos, end_position);
   }
 
   ReturnStatement* NewSyntheticAsyncReturnStatement(
-      Expression* expression, int pos, int end_position = kNoSourcePosition) {
+      Expression* expression, int pos,
+      int end_position = ReturnStatement::kFunctionLiteralReturnPosition) {
     return zone_->New<ReturnStatement>(
         expression, ReturnStatement::kSyntheticAsyncReturn, pos, end_position);
   }
@@ -3170,11 +3171,11 @@ class AstNodeFactory final {
     if (op != Token::INIT && target->IsVariableProxy()) {
       target->AsVariableProxy()->set_is_assigned();
     }
-    
+
     Assignment* ret;
     if (op == Token::ASSIGN || op == Token::INIT) {
-      ret = zone_->New<Assignment>(AstNode::kAssignment, op, target, value,
-                                    pos);
+      ret =
+          zone_->New<Assignment>(AstNode::kAssignment, op, target, value, pos);
     } else {
       ret = zone_->New<CompoundAssignment>(
           op, target, value, pos,
@@ -3182,9 +3183,9 @@ class AstNodeFactory final {
                              pos + 1));
     }
 
-    if(target->IsVariableProxy()){
+    if (target->IsVariableProxy()) {
       VariableProxy* vp = static_cast<VariableProxy*>(target);
-      if(vp->is_resolved()){
+      if (vp->is_resolved()) {
         vp->var()->initializer() = ret;
       }
     }
