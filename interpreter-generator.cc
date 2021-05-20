@@ -2234,45 +2234,10 @@ IGNITION_HANDLER(SwitchOnSmiNoFeedback, InterpreterAssembler) {
   TNode<UintPtrT> table_length = BytecodeOperandUImmWord(1);
   TNode<IntPtrT> case_value_base = BytecodeOperandImmIntPtr(2);
 
-  /*
-  if(TaggedSmi(acc)){
-    continue
-  } else {
-    if(IsSafeInteger(acc)){
-      convert
-      continue
-    } else {
-      go directly to fall through
-    }
-  }
+  Label fall_through(this);
+  TNode<IntPtrT> acc_intptr = TryTaggedToInt32Ptr(acc, &fall_through); 
 
-  Branch(TaggedSmi(acc), &is_smi_already, &is_not_smi);
-  BIND(&is_not_smi);
-  Branch(IsSafeInteger(acc), &convert, &fall_through)
-  BIND(&convert);
-  <my_conversion>
-
-  */
-  Label fall_through(this), convert(this), low_check(this), high_check(this),
-      is_not_smi(this);
-  Branch(TaggedIsSmi(acc), &convert, &is_not_smi);
-
-  BIND(&is_not_smi);
-  Branch(IsSafeInteger(acc), &low_check, &fall_through);
-
-  BIND(&low_check);
-  BranchIfNumberGreaterThanOrEqual(CAST(acc), SmiConstant(Smi::kMinValue),
-                                   &high_check, &fall_through);
-
-  BIND(&high_check);
-  BranchIfNumberLessThanOrEqual(CAST(acc), SmiConstant(Smi::kMaxValue),
-                                &convert, &fall_through);
-
-  BIND(&convert);
-  acc = SmiFromInt32(TruncateNumberToWord32(CAST(acc)));
-  CSA_ASSERT(this, TaggedIsSmi(acc));
-
-  TNode<IntPtrT> case_value = IntPtrSub(SmiUntag(CAST(acc)), case_value_base);
+  TNode<IntPtrT> case_value = IntPtrSub(acc_intptr, case_value_base);
   GotoIf(IntPtrLessThan(case_value, IntPtrConstant(0)), &fall_through);
   GotoIf(IntPtrGreaterThanOrEqual(case_value, table_length), &fall_through);
   TNode<WordT> entry = IntPtrAdd(table_start, case_value);

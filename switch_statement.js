@@ -15,13 +15,11 @@ function BigSwitch() {
   Function('n, c',
     `
       const a = c(n, a => a);
-      ${c(n, a => `const a${a} = ${a};`).join('\n')}
-
       let ctr = 0;
 
       for(let i = 0; i !== (1+n); i++){
         switch(i){
-          ${c(n, a => `case a${a}: ctr += i; break;`).join('\n')}
+          ${c(n, a => `case ${a}: ctr += i; break;`).join('\n')}
           default: ctr += i; break;
         }
       }

@@ -1799,83 +1799,50 @@ void BytecodeGenerator::VisitWithStatement(WithStatement* stmt) {
   VisitInScope(stmt->statement(), stmt->scope());
 }
 
-static inline std::pair<bool, Smi> IrreducibleSmi() {
-  return std::pair<bool, Smi>(false, Smi::FromInt(0));
+// kind of misleading, gets the smi but makes into an integer
+static inline int ReduceToSmi(Expression* expr) {
+  return static_cast<Literal*>(expr)->AsSmiLiteral().value();
 }
 
-static std::pair<bool, Smi> ReduceToSmi(Expression* expr) {
-  if (expr->IsVariableProxy()) {
-    if (static_cast<VariableProxy*>(expr)->var()->mode() !=
-        VariableMode::kConst) {
-      return IrreducibleSmi();
-    }
-    Assignment* iter = static_cast<VariableProxy*>(expr)->var()->initializer();
-    if (iter == nullptr) {
-      return IrreducibleSmi();
-    } else {
-      expr = iter->value();
-    }
-  }
-
-  if (expr->IsSmiLiteral()) {
-    return std::pair<bool, Smi>(true,
-                                static_cast<Literal*>(expr)->AsSmiLiteral());
-  } else {
-    return IrreducibleSmi();
-  }
+static inline bool IsSmi(Expression* expr) {
+  return expr->IsSmiLiteral();
 }
 
 static inline bool IsSpreadAcceptable(int spread, int ncases) {
   return (spread / ncases) < 3;
 }
 
-static const std::size_t INFO_MIN_IDX = 0;
-static const std::size_t INFO_MAX_IDX = 1;
-
 static const int DEFAULT_NOT_FOUND = -1;
 
-static void IsSwitchOptimizable(SwitchStatement* stmt, std::vector<int>& info,
-                                std::unordered_set<int>& covered_cases,
+static bool IsSwitchOptimizable(SwitchStatement* stmt, std::unordered_set<int>& covered_cases,
+                                int& min_case, int& max_case, 
                                 int& default_case) {
   ZonePtrList<CaseClause>* cases = stmt->cases();
   if (cases->length() < 5) {  // how many cases is right?
-    info.clear();
-    return;
+    return false;
   }
 
   // check spread
-  bool all_cases_const = true;
-  int min = INT_MAX;
-  int max = INT_MIN;
-
-  info.resize(2 + (cases->length()));
+  min_case = INT_MAX;
+  max_case = INT_MIN;
 
   for (int i = 0; i < cases->length(); ++i) {
     if (cases->at(i)->is_default()) {
       default_case = i;
       continue;
     }
-    auto pr = ReduceToSmi(cases->at(i)->label());
-    if (!(pr.first)) {
-      info.clear();
-      return;
+    if (!IsSmi(cases->at(i)->label())) {
+      return false;
     }
 
-    int value = pr.second.value();
+    int value = ReduceToSmi(cases->at(i)->label());
     covered_cases.insert(value);
-    info[i + 2] = value;
 
-    min = std::min(min, value);
-    max = std::max(max, value);
+    min_case = std::min(min_case, value);
+    max_case = std::max(max_case, value);
   }
 
-  info[INFO_MIN_IDX] = min;
-  info[INFO_MAX_IDX] = max;
-
-  if (!(all_cases_const && IsSpreadAcceptable(max - min, cases->length()))) {
-    info.clear();
-    return;
-  }
+  return IsSpreadAcceptable(max_case - min_case, cases->length());
 }
 
 void BytecodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
@@ -1883,14 +1850,13 @@ void BytecodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
   // maintain a execution result scope where registers can be allocated.
   ZonePtrList<CaseClause>* clauses = stmt->cases();
 
-  std::vector<int> info;
   std::unordered_set<int> covered_cases;
   int default_case = DEFAULT_NOT_FOUND;
+  int min_case, max_case;
 
-  IsSwitchOptimizable(stmt, info, covered_cases, default_case);
-  if (info.size() > 0) {
+  if(IsSwitchOptimizable(stmt, covered_cases, min_case, max_case, default_case)){
     BytecodeJumpTable* jump_table = builder()->AllocateJumpTable(
-        info[INFO_MAX_IDX] - info[INFO_MIN_IDX] + 1, info[INFO_MIN_IDX]);
+        max_case - min_case + 1, min_case);
     JmpTblBuilder jtbl_builder(builder(), block_coverage_builder_, stmt,
                                clauses->length(), jump_table);
     ControlScopeForBreakable scope(this, stmt, &jtbl_builder);
@@ -1909,10 +1875,10 @@ void BytecodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
 
     for (int i = 0; i < clauses->length(); ++i) {
       if (i != default_case) {
-        jtbl_builder.SetCaseTarget(info[2 + i], clauses->at(i));
+        jtbl_builder.SetCaseTarget(ReduceToSmi(clauses->at(i)->label()), clauses->at(i));
       } else {
         // guaranteed to occur only once
-        for (int j = info[INFO_MIN_IDX]; j <= info[INFO_MAX_IDX]; ++j) {
+        for (int j = min_case; j <= max_case; ++j) {
           if (covered_cases.find(j) == covered_cases.end()) {
             jtbl_builder.SetCaseTarget(j, nullptr);
           }
@@ -1920,6 +1886,14 @@ void BytecodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
         jtbl_builder.BindDefault();
       }
       VisitStatements(clauses->at(i)->statements());
+    }
+    
+    if(default_case == DEFAULT_NOT_FOUND){
+      for (int j = min_case; j <= max_case; ++j) {
+        if (covered_cases.find(j) == covered_cases.end()) {
+          jtbl_builder.SetCaseTarget(j, nullptr);
+        }
+      }
     }
   } else {
     SwitchBuilder switch_builder(builder(), block_coverage_builder_, stmt,

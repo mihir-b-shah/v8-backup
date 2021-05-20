@@ -207,15 +207,6 @@ class V8_EXPORT_PRIVATE JmpTblBuilder final
 
   void JumpToDefault() { this->EmitJump(&default_); }
 
-  void FallThroughIfTrue(bool use_default) {
-    if (use_default) {
-      this->EmitJumpIfFalse(
-          BytecodeArrayBuilder::ToBooleanMode::kAlreadyBoolean, &default_);
-    } else {
-      this->BreakIfFalse(BytecodeArrayBuilder::ToBooleanMode::kAlreadyBoolean);
-    }
-  }
-
  private:
   BytecodeJumpTable* jtbl;
   BytecodeLabels default_;
