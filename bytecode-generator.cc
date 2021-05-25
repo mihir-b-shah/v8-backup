@@ -4,12 +4,9 @@
 
 #include "src/interpreter/bytecode-generator.h"
 
-#include <algorithm>
-#include <climits>
-#include <iostream>
+#include <map>
 #include <unordered_set>
-#include <utility>
-#include <vector>
+#include <unordered_map>
 
 #include "src/api/api-inl.h"
 #include "src/ast/ast-source-ranges.h"
@@ -1799,148 +1796,260 @@ void BytecodeGenerator::VisitWithStatement(WithStatement* stmt) {
   VisitInScope(stmt->statement(), stmt->scope());
 }
 
-// kind of misleading, gets the smi but makes into an integer
-static inline int ReduceToSmi(Expression* expr) {
-  return static_cast<Literal*>(expr)->AsSmiLiteral().value();
+namespace {
+
+// Precondition: expr is a smi literal, just extracts the value.
+inline int ReduceToSmiValue(Expression* expr) {
+  return expr->AsLiteral()->AsSmiLiteral().value();
 }
 
-static inline bool IsSmi(Expression* expr) {
-  return expr->IsSmiLiteral();
+// Is the range of Smi's small enough relative to number of cases?
+inline bool IsSpreadAcceptable(int spread, int ncases) {
+  return spread < static_cast<int>(FLAG_switch_table_spread_threshold) * ncases;
 }
 
-static inline bool IsSpreadAcceptable(int spread, int ncases) {
-  return (spread / ncases) < 3;
-}
+struct SwitchInfo {
+  static const int kDefaultNotFound = -1;
 
-static const int DEFAULT_NOT_FOUND = -1;
+  std::map<int, CaseClause*> covered_cases;
+  CaseClause* zero_case;
+  int default_case;
 
-static bool IsSwitchOptimizable(SwitchStatement* stmt, std::unordered_set<int>& covered_cases,
-                                int& min_case, int& max_case, 
-                                int& default_case) {
+  SwitchInfo() {
+    default_case = kDefaultNotFound;
+    zero_case = nullptr;
+  }
+
+  bool DefaultExists() { return default_case != kDefaultNotFound; }
+  bool CaseExists(int j) {
+    return covered_cases.find(j) != covered_cases.end();
+  }
+  bool CaseExists(Expression* expr) {
+    return expr->IsSmiLiteral() ? CaseExists(ReduceToSmiValue(expr)) : false;
+  }
+  CaseClause* GetClause(int j) { return covered_cases[j]; }
+
+  bool IsDuplicate(CaseClause* clause) {
+    if(clause->label()->IsSmiLiteral()){
+      int v = ReduceToSmiValue(clause->label());
+      return (CaseExists(clause->label()) && clause != GetClause(v)) || (v == 0 && zero_case != nullptr && clause != zero_case);
+    }
+    return false;
+  }
+  int MinCase() {
+    return covered_cases.size() == 0 ? INT_MAX : covered_cases.begin()->first;
+  }
+  int MaxCase() {
+    return covered_cases.size() == 0 ? INT_MIN : covered_cases.rbegin()->first;
+  }
+  void Print() {
+    std::cout << "Covered_cases: " << '\n';
+    for(auto iter = covered_cases.begin(); iter != covered_cases.end(); ++iter){
+      std::cout << iter->first << "->" << iter->second << '\n';
+    }
+    std::cout << "Zero_case: " << zero_case << '\n';
+    std::cout << "Default_case: " << default_case << '\n';
+  }
+};
+
+// checks whether we should use a jump table at all.
+bool IsSwitchOptimizable(SwitchStatement* stmt, SwitchInfo* info) {
   ZonePtrList<CaseClause>* cases = stmt->cases();
-  if (cases->length() < 5) {  // how many cases is right?
+
+  // can i simulate JS heap numbers in my doubles?
+  if (sizeof(double) != 8) {
     return false;
   }
 
-  // check spread
-  min_case = INT_MAX;
-  max_case = INT_MIN;
+  // the current heap numbers we have encountered as cases (because some can
+  // alias Smi's e.g. -0 and 0) and hence must be treated as a duplicate case
+  bool zero_alias = false;
 
   for (int i = 0; i < cases->length(); ++i) {
-    if (cases->at(i)->is_default()) {
-      default_case = i;
-      continue;
+    CaseClause* clause = cases->at(i);
+    if(!clause->is_default()){
+      if (clause->label()->IsSmiLiteral()) {
+        int value = ReduceToSmiValue(clause->label());
+        // safe cast because double is 64-bit as verified above, same as
+        // JavaScript Number
+        if(!(value == 0 && zero_alias)){
+          auto iter = info->covered_cases.insert({value, clause});
+          if(iter.second && value == 0){
+            info->zero_case = clause;
+            zero_alias = true;
+          }
+        }
+      } else if (!clause->label()->IsLiteral()){
+        break;
+      } else if (clause->label()->AsLiteral()->IsNumber() && clause->label()->AsLiteral()->AsNumber() == 0.0 && !zero_alias) {
+        // guaranteed that it is a kHeapNumber
+        info->zero_case = clause;
+        zero_alias = true;
+      }
     }
-    if (!IsSmi(cases->at(i)->label())) {
-      return false;
-    }
-
-    int value = ReduceToSmi(cases->at(i)->label());
-    covered_cases.insert(value);
-
-    min_case = std::min(min_case, value);
-    max_case = std::max(max_case, value);
   }
 
-  return IsSpreadAcceptable(max_case - min_case, cases->length());
+  // GCC also jump-table optimizes switch statements with 5 cases or more
+  if (!(info->covered_cases.size() >= 5 &&
+        IsSpreadAcceptable(info->MaxCase() - info->MinCase(),
+                           cases->length()))) {
+    // invariant- covered_cases has all cases and only cases that will go in the
+    // jump table
+    info->covered_cases.clear();
+    return false;
+  } else {
+    return true;
+  }
 }
 
+}  // namespace
+
+// This adds a jump table optimization for switch statements with Smi cases.
+// If there are 5+ non-duplicate Smi clauses, and they are sufficiently compact,
+// we generate a jump table. In the fall-through path, we put the compare-jumps
+// for the non-Smi cases.
+
+// e.g.
+// 
+// switch(x){
+//   case -0: out = 10;
+//   case 1: out = 11; break;
+//   case 0: out = 12; break;
+//   case 2: out = 13;
+//   case 3: out = 14; break;
+//   case 0.5: out = 15; break;
+//   case 4: out = 16;
+//   case y: out = 17;
+//   case 5: out = 18;
+//   default: out = 19; break;
+// }
+
+// becomes this pseudo-bytecode:
+
+//   lda x
+//   switch_on_smi {1: @case_1, 2: @case_2, 3: @case_3, 4: @case_4}
+// @fallthrough:
+//   jump_if_strict_equal -0.0 @case_minus_0.0
+//   jump_if_strict_equal 0.5  @case_0.5
+//   jump_if_strict_equal y    @case_y
+//   jump_if_strict_equal 5    @case_5
+//   jump @default
+// @case_minus_0.0:
+//   <out = 10>
+// @case_1
+//   <out = 11, break>
+// @case_0:
+//   <out = 12, break>
+// @case_2:
+//   <out = 13>
+// @case_3:
+//   <out = 14, break>
+// @case_0.5:
+//   <out = 15, break>
+// @case_4:
+//   <out = 16>
+// @case_y:
+//   <out = 17>
+// @case_5:
+//   <out = 18>
+// @default:
+//   <out = 19, break>
+ 
 void BytecodeGenerator::VisitSwitchStatement(SwitchStatement* stmt) {
   // We need this scope because we visit for register values. We have to
   // maintain a execution result scope where registers can be allocated.
   ZonePtrList<CaseClause>* clauses = stmt->cases();
 
-  std::unordered_set<int> covered_cases;
-  int default_case = DEFAULT_NOT_FOUND;
-  int min_case, max_case;
+  SwitchInfo info;
+  BytecodeJumpTable* jump_table = nullptr;
+  bool use_jump_table = IsSwitchOptimizable(stmt, &info);
 
-  if(IsSwitchOptimizable(stmt, covered_cases, min_case, max_case, default_case)){
-    BytecodeJumpTable* jump_table = builder()->AllocateJumpTable(
-        max_case - min_case + 1, min_case);
-    JmpTblBuilder jtbl_builder(builder(), block_coverage_builder_, stmt,
-                               clauses->length(), jump_table);
-    ControlScopeForBreakable scope(this, stmt, &jtbl_builder);
-    builder()->SetStatementPosition(stmt);
+  int n_comp_cases = clauses->length();
+  if (use_jump_table) {
+    n_comp_cases -= static_cast<int>(info.covered_cases.size());
+    jump_table = builder()->AllocateJumpTable(
+        info.MaxCase() - info.MinCase() + 1, info.MinCase());
+  }
 
-    // check whether fits in smi
-    VisitForAccumulatorValue(stmt->tag());
-    builder()->SwitchOnSmiNoFeedback(jump_table);
+  // number of cases we will generate comparison jumps for
+  // note we ignore duplicate cases- very unlikely
 
-    if (default_case == DEFAULT_NOT_FOUND) {
-      jtbl_builder.Break();
-    } else {
-      // jump to the default label
-      jtbl_builder.JumpToDefault();
-    }
+  // are we still using traditional any if-else bytecodes to evaluate the
+  // switch?
+  bool use_jumps = n_comp_cases != 0; // just more readable
 
-    for (int i = 0; i < clauses->length(); ++i) {
-      if (i != default_case) {
-        jtbl_builder.SetCaseTarget(ReduceToSmi(clauses->at(i)->label()), clauses->at(i));
-      } else {
-        // guaranteed to occur only once
-        for (int j = min_case; j <= max_case; ++j) {
-          if (covered_cases.find(j) == covered_cases.end()) {
-            jtbl_builder.SetCaseTarget(j, nullptr);
-          }
-        }
-        jtbl_builder.BindDefault();
-      }
-      VisitStatements(clauses->at(i)->statements());
-    }
-    
-    if(default_case == DEFAULT_NOT_FOUND){
-      for (int j = min_case; j <= max_case; ++j) {
-        if (covered_cases.find(j) == covered_cases.end()) {
-          jtbl_builder.SetCaseTarget(j, nullptr);
-        }
-      }
-    }
-  } else {
-    SwitchBuilder switch_builder(builder(), block_coverage_builder_, stmt,
-                                 clauses->length());
-    ControlScopeForBreakable scope(this, stmt, &switch_builder);
-    int default_index = -1;
+  SwitchBuilder switch_builder(builder(), block_coverage_builder_, stmt,
+                               n_comp_cases, jump_table);
+  ControlScopeForBreakable scope(this, stmt, &switch_builder);
+  builder()->SetStatementPosition(stmt);
 
-    builder()->SetStatementPosition(stmt);
+  VisitForAccumulatorValue(stmt->tag());
 
-    // Keep the switch value in a register until a case matches.
-    Register tag = VisitForRegisterValue(stmt->tag());
+  // also fills empty slots in jump table
+  switch_builder.EmitJumpTableIfExists(info.MinCase(), info.MaxCase(),
+                                       info.covered_cases);
+
+  int case_compare_ctr = 0;
+  #ifdef DEBUG
+  std::unordered_map<int,int> case_ctr_checker;
+  #endif
+
+  if (use_jumps) {
+    Register tag_holder = register_allocator()->NewRegister();
     FeedbackSlot slot = clauses->length() > 0
                             ? feedback_spec()->AddCompareICSlot()
                             : FeedbackSlot::Invalid();
+    builder()->StoreAccumulatorInRegister(tag_holder);
 
-    // Iterate over all cases and create nodes for label comparison.
-    for (int i = 0; i < clauses->length(); i++) {
+    for (int i = 0; i < clauses->length(); ++i) {
       CaseClause* clause = clauses->at(i);
-
-      // The default is not a test, remember index.
-      if (clause->is_default()) {
-        default_index = i;
-        continue;
+      if(clause->is_default()){
+        info.default_case = i;
+      } else if(!info.CaseExists(clause->label())){
+        // Perform label comparison as if via '===' with tag.
+        VisitForAccumulatorValue(clause->label());
+        builder()->CompareOperation(Token::Value::EQ_STRICT, tag_holder,
+                                    feedback_index(slot));
+        #ifdef DEBUG
+        case_ctr_checker[i] = case_compare_ctr;
+        #endif
+        switch_builder.JumpToCaseIfTrue(ToBooleanMode::kAlreadyBoolean,
+                                        case_compare_ctr++);
       }
-
-      // Perform label comparison as if via '===' with tag.
-      VisitForAccumulatorValue(clause->label());
-      builder()->CompareOperation(Token::Value::EQ_STRICT, tag,
-                                  feedback_index(slot));
-      switch_builder.Case(ToBooleanMode::kAlreadyBoolean, i);
     }
+  }
 
-    if (default_index >= 0) {
-      // Emit default jump if there is a default case.
-      switch_builder.DefaultAt(default_index);
+  // for fall-throughs after comparisons (or out-of-range/non-Smi's for jump
+  // tables)
+  if (info.DefaultExists()) {
+    switch_builder.JumpToDefault();
+  } else {
+    switch_builder.Break();
+  }
+
+  case_compare_ctr = 0;
+  for (int i = 0; i < clauses->length(); ++i) {
+    CaseClause* clause = clauses->at(i);
+    if (i != info.default_case) {
+      if (!info.IsDuplicate(clause)) {
+        bool use_table = info.CaseExists(clause->label());
+        if (!use_table) {
+          // guarantee that we should generate compare/jump if no table
+          #ifdef DEBUG
+          DCHECK(case_ctr_checker[i] == case_compare_ctr);
+          #endif
+          switch_builder.BindCaseTargetForCompareJump(case_compare_ctr++, clause);
+        } else {
+          // use jump table if this is not a duplicate label
+          switch_builder.BindCaseTargetForJumpTable(
+              ReduceToSmiValue(clause->label()), clause);
+        }
+      }
     } else {
-      // Otherwise if we have reached here none of the cases matched, so jump to
-      // the end.
-      switch_builder.Break();
+      switch_builder.BindDefault(clause);
     }
-
-    // Iterate over all cases and create the case bodies.
-    for (int i = 0; i < clauses->length(); i++) {
-      CaseClause* clause = clauses->at(i);
-      switch_builder.SetCaseTarget(i, clause);
-      VisitStatements(clause->statements());
-    }
+    // regardless, generate code (in case of fall throughs)
+    VisitStatements(clause->statements());
   }
 }
 

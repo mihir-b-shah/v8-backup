@@ -2227,15 +2227,13 @@ IGNITION_HANDLER(JumpLoop, InterpreterAssembler) {
 // next bytecode.
 IGNITION_HANDLER(SwitchOnSmiNoFeedback, InterpreterAssembler) {
   // The accumulator must be a Smi.
-  // TODO(leszeks): Add a bytecode with type feedback that allows other
-  // accumulator values.
   TNode<Object> acc = GetAccumulator();
   TNode<UintPtrT> table_start = BytecodeOperandIdx(0);
   TNode<UintPtrT> table_length = BytecodeOperandUImmWord(1);
   TNode<IntPtrT> case_value_base = BytecodeOperandImmIntPtr(2);
 
   Label fall_through(this);
-  TNode<IntPtrT> acc_intptr = TryTaggedToInt32Ptr(acc, &fall_through); 
+  TNode<IntPtrT> acc_intptr = TryTaggedToInt32AsIntPtr(acc, &fall_through);
 
   TNode<IntPtrT> case_value = IntPtrSub(acc_intptr, case_value_base);
   GotoIf(IntPtrLessThan(case_value, IntPtrConstant(0)), &fall_through);

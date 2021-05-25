@@ -5,6 +5,8 @@
 #ifndef V8_INTERPRETER_CONTROL_FLOW_BUILDERS_H_
 #define V8_INTERPRETER_CONTROL_FLOW_BUILDERS_H_
 
+#include <map>
+
 #include "src/ast/ast-source-ranges.h"
 #include "src/interpreter/block-coverage-builder.h"
 #include "src/interpreter/bytecode-array-builder.h"
@@ -151,65 +153,64 @@ class V8_EXPORT_PRIVATE SwitchBuilder final
  public:
   SwitchBuilder(BytecodeArrayBuilder* builder,
                 BlockCoverageBuilder* block_coverage_builder,
-                SwitchStatement* statement, int number_of_cases)
+                SwitchStatement* statement, int number_of_cases,
+                BytecodeJumpTable* jtbl)
       : BreakableControlFlowBuilder(builder, block_coverage_builder, statement),
-        case_sites_(builder->zone()) {
+        case_sites_(builder->zone()),
+        default_(builder->zone()),
+        jump_table_(jtbl) {
     case_sites_.resize(number_of_cases);
   }
+
   ~SwitchBuilder() override;  // NOLINT (modernize-use-equals-default)
 
-  // This method should be called by the SwitchBuilder owner when the case
-  // statement with |index| is emitted to update the case jump site.
-  void SetCaseTarget(int index, CaseClause* clause);
+  void BindCaseTargetForJumpTable(int case_value, CaseClause* clause) {
+    builder()->Bind(jump_table_, case_value);
+    BuildBlockCoverage(clause);
+  }
+
+  void BindCaseTargetForCompareJump(int index, CaseClause* clause) {
+    builder()->Bind(&case_sites_.at(index));
+    BuildBlockCoverage(clause);
+  }
 
   // This method is called when visiting case comparison operation for |index|.
   // Inserts a JumpIfTrue with ToBooleanMode |mode| to a unbound label that is
   // patched when the corresponding SetCaseTarget is called.
-  void Case(BytecodeArrayBuilder::ToBooleanMode mode, int index) {
+  void JumpToCaseIfTrue(BytecodeArrayBuilder::ToBooleanMode mode, int index) {
     builder()->JumpIfTrue(mode, &case_sites_.at(index));
   }
 
-  // This method is called when all cases comparisons have been emitted if there
-  // is a default case statement. Inserts a Jump to a unbound label that is
-  // patched when the corresponding SetCaseTarget is called.
-  void DefaultAt(int index) { builder()->Jump(&case_sites_.at(index)); }
+  void EmitJumpTableIfExists(int min_case, int max_case,
+                             std::map<int, CaseClause*>& covered_cases) {
+    if (jump_table_ != nullptr) {
+      builder()->SwitchOnSmiNoFeedback(jump_table_);
+      for (int j = min_case; j <= max_case; ++j) {
+        if (covered_cases.find(j) == covered_cases.end()) {
+          this->BindCaseTargetForJumpTable(j, nullptr);
+        }
+      }
+    }
+  }
+
+  void BindDefault(CaseClause* clause) {
+    default_.Bind(builder());
+    BuildBlockCoverage(clause);
+  }
+  void JumpToDefault() { this->EmitJump(&default_); }
 
  private:
   // Unbound labels that identify jumps for case statements in the code.
   ZoneVector<BytecodeLabel> case_sites_;
-};
+  BytecodeLabels default_;
+  BytecodeJumpTable* jump_table_;
 
-// A class to help with building the jump table;
-class V8_EXPORT_PRIVATE JmpTblBuilder final
-    : public BreakableControlFlowBuilder {
- public:
-  JmpTblBuilder(BytecodeArrayBuilder* builder,
-                BlockCoverageBuilder* block_coverage_builder,
-                SwitchStatement* statement, int number_of_cases,
-                BytecodeJumpTable* jtbl)
-      : BreakableControlFlowBuilder(builder, block_coverage_builder, statement),
-        default_(builder->zone()) {
-    this->jtbl = jtbl;
-  }
-  ~JmpTblBuilder() override {}
-
-  // This method should be called by the SwitchBuilder owner when the case
-  // statement with |index| is emitted to update the case jump site.
-  void SetCaseTarget(unsigned case_label, CaseClause* clause) {
-    builder()->Bind(jtbl, case_label);
-    if (block_coverage_builder_) {
+  void BuildBlockCoverage(CaseClause* clause) {
+    if (block_coverage_builder_ && clause != nullptr) {
       block_coverage_builder_->IncrementBlockCounter(clause,
                                                      SourceRangeKind::kBody);
     }
   }
-
-  void BindDefault() { default_.Bind(builder()); }
-
-  void JumpToDefault() { this->EmitJump(&default_); }
-
- private:
-  BytecodeJumpTable* jtbl;
-  BytecodeLabels default_;
 };
 
 // A class to help with co-ordinating control flow in try-catch statements.

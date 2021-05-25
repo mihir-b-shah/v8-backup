@@ -5351,9 +5351,8 @@ void CodeStubAssembler::InitializeAllocationMemento(
   Comment("]");
 }
 
-TNode<IntPtrT> CodeStubAssembler::TryTaggedToInt32Ptr(
+TNode<IntPtrT> CodeStubAssembler::TryTaggedToInt32AsIntPtr(
     TNode<Object> acc, Label* if_not_possible) {
-
   TVARIABLE(IntPtrT, acc_intptr);
   Label is_not_smi(this), have_int32(this);
 
