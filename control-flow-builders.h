@@ -154,50 +154,31 @@ class V8_EXPORT_PRIVATE SwitchBuilder final
   SwitchBuilder(BytecodeArrayBuilder* builder,
                 BlockCoverageBuilder* block_coverage_builder,
                 SwitchStatement* statement, int number_of_cases,
-                BytecodeJumpTable* jtbl)
+                BytecodeJumpTable* jump_table)
       : BreakableControlFlowBuilder(builder, block_coverage_builder, statement),
         case_sites_(builder->zone()),
         default_(builder->zone()),
-        jump_table_(jtbl) {
+        jump_table_(jump_table) {
     case_sites_.resize(number_of_cases);
   }
 
-  ~SwitchBuilder() override;  // NOLINT (modernize-use-equals-default)
+  ~SwitchBuilder() override;
 
-  void BindCaseTargetForJumpTable(int case_value, CaseClause* clause) {
-    builder()->Bind(jump_table_, case_value);
-    BuildBlockCoverage(clause);
-  }
+  void BindCaseTargetForJumpTable(int case_value, CaseClause* clause);
 
-  void BindCaseTargetForCompareJump(int index, CaseClause* clause) {
-    builder()->Bind(&case_sites_.at(index));
-    BuildBlockCoverage(clause);
-  }
+  void BindCaseTargetForCompareJump(int index, CaseClause* clause);
 
   // This method is called when visiting case comparison operation for |index|.
   // Inserts a JumpIfTrue with ToBooleanMode |mode| to a unbound label that is
   // patched when the corresponding SetCaseTarget is called.
-  void JumpToCaseIfTrue(BytecodeArrayBuilder::ToBooleanMode mode, int index) {
-    builder()->JumpIfTrue(mode, &case_sites_.at(index));
-  }
+  void JumpToCaseIfTrue(BytecodeArrayBuilder::ToBooleanMode mode, int index);
 
   void EmitJumpTableIfExists(int min_case, int max_case,
-                             std::map<int, CaseClause*>& covered_cases) {
-    if (jump_table_ != nullptr) {
-      builder()->SwitchOnSmiNoFeedback(jump_table_);
-      for (int j = min_case; j <= max_case; ++j) {
-        if (covered_cases.find(j) == covered_cases.end()) {
-          this->BindCaseTargetForJumpTable(j, nullptr);
-        }
-      }
-    }
-  }
+                             std::map<int, CaseClause*>& covered_cases);
 
-  void BindDefault(CaseClause* clause) {
-    default_.Bind(builder());
-    BuildBlockCoverage(clause);
-  }
-  void JumpToDefault() { this->EmitJump(&default_); }
+  void BindDefault(CaseClause* clause);
+
+  void JumpToDefault();
 
  private:
   // Unbound labels that identify jumps for case statements in the code.
