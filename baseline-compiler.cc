@@ -2011,14 +2011,6 @@ void BaselineCompiler::VisitSwitchOnSmiNoFeedback() {
   
   Register case_value = scratch_scope.AcquireScratch();
 
-  #if defined(V8_TARGET_LITTLE_ENDIAN)
-    const int mem_offset_exp = 1;
-  #elif defined(V8_TARGET_BIG_ENDIAN)
-    const int mem_offset_exp = -1;
-  #else
-  #error Unknown byte ordering
-  #endif
-
   Label is_not_smi, have_int32, fail;
 
   __ JumpIfNotSmi(case_value, &is_not_smi, Label::Distance::kNear);
@@ -2029,13 +2021,10 @@ void BaselineCompiler::VisitSwitchOnSmiNoFeedback() {
   __ JumpIfObjectType(Condition::kNotEqual, kInterpreterAccumulatorRegister,
                       HEAP_NUMBER_TYPE, scratch_scope.AcquireScratch(),
                       &fail, Label::kNear);
-  
-  __ Move(kInterpreterAccumulatorRegister, MemOperand(kInterpreterAccumulatorRegister, mem_offset_exp));
-  __ TestAndBranch(kInterpreterAccumulatorRegister, 0x7fffffff, Condition::kNotZero, &fail, Label::kNear);
-  __ Move(kInterpreterAccumulatorRegister, 0);
-  
+  __ JumpIfHeapNumberNotSmi(kInterpreterAccumulatorRegister, &fail, Label::kNear);
+
   __ Bind(&have_int32);
-  __ Switch(case_value, case_value_base, labels.get(), offsets.size(), &fail);
+  __ Switch(case_value, case_value_base, labels.get(), offsets.size());
 }
 
 void BaselineCompiler::VisitForInEnumerate() {

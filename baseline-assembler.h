@@ -86,6 +86,8 @@ class BaselineAssembler {
                            Label::Distance distance = Label::kFar);
   inline void JumpIfByte(Condition cc, Register value, int32_t byte,
                          Label* target, Label::Distance distance = Label::kFar);
+  inline void JumpIfHeapNumberNotSmi(Register value, Label* target,
+                           Label::Distance distance = Label::kFar);
 
   inline void LoadMap(Register output, Register value);
   inline void LoadRoot(Register output, RootIndex index);
@@ -173,7 +175,7 @@ class BaselineAssembler {
   inline void SmiUntag(Register output, Register value);
 
   inline void Switch(Register reg, int case_value_base, Label** labels,
-                     int num_labels, Label* fallthrough = nullptr);
+                     int num_labels);
 
   // Register operands.
   inline void LoadRegister(Register output, interpreter::Register source);
