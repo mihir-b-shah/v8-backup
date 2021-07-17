@@ -1341,13 +1341,21 @@ void MacroAssembler::JumpIfNotSmi(Operand src, Label* on_not_smi,
   j(NegateCondition(smi), on_not_smi, near_jump);
 }
   
-void MacroAssembler::JumpIfHeapNumberNotSmi(Register value, Label* not_smi_label,
+void MacroAssembler::JumpIfHeapNumberNotSmi(Register dst, Label* not_smi_label,
                                             Label::Distance near_jump) {
-  Cvttsd2si(kScratchRegister, MemOperand(value, HeapNumber::kValueOffset));
-  Cvtlsi2sd(kScratchDoubleReg, kScratchRegister);
-  Ucomisd(kScratchDoubleReg, MemOperand(value, HeapNumber::kValueOffset));
+  /*
+  Movsd(kScratchDoubleReg, FieldOperand(kInterpreterAccumulatorRegister, HeapNumber::kValueOffset));
+  Cvttsd2si(dst, kScratchDoubleReg);
+  */
+  Cvttsd2si(dst, FieldOperand(kInterpreterAccumulatorRegister, HeapNumber::kValueOffset));
+  Cvtlsi2sd(kScratchDoubleReg, dst);
+  Ucomisd(kScratchDoubleReg, FieldOperand(kInterpreterAccumulatorRegister, HeapNumber::kValueOffset));
   j(not_equal, not_smi_label, near_jump);
-  Move(kScratchRegister, value);
+  /*
+  Cvtlsi2sd(kScratchDoubleReg, dst);
+  Ucomisd(kScratchDoubleReg, MemOperand(kInterpreterAccumulatorRegister, HeapNumber::kValueOffset));
+  j(not_equal, not_smi_label, near_jump);
+  */
 }
 
 void MacroAssembler::SmiAddConstant(Operand dst, Smi constant) {

@@ -162,7 +162,9 @@ void BaselineAssembler::JumpIfObjectType(Condition cc, Register object,
                                          InstanceType instance_type,
                                          Register map, Label* target,
                                          Label::Distance distance) {
-  __ AssertNotSmi(object);
+  if (FLAG_debug_code) {
+    __ AssertNotSmi(object);
+  }
   __ CmpObjectType(object, instance_type, map);
   __ j(AsMasmCondition(cc), target, distance);
 }

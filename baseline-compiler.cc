@@ -2009,22 +2009,43 @@ void BaselineCompiler::VisitSwitchOnSmiNoFeedback() {
         &EnsureLabels(offset.target_offset)->unlinked;
   }
   
+
+  /*
   Register case_value = scratch_scope.AcquireScratch();
+  Label is_not_smi, have_int32, fail1, fail2;
 
-  Label is_not_smi, have_int32, fail;
-
-  __ JumpIfNotSmi(case_value, &is_not_smi, Label::Distance::kNear);
+  __ JumpIfNotSmi(kInterpreterAccumulatorRegister, &is_not_smi);
   __ SmiUntag(case_value, kInterpreterAccumulatorRegister);
-  __ Jump(&have_int32, Label::Distance::kNear);
+  __ Jump(&have_int32);
 
   __ Bind(&is_not_smi);
   __ JumpIfObjectType(Condition::kNotEqual, kInterpreterAccumulatorRegister,
-                      HEAP_NUMBER_TYPE, scratch_scope.AcquireScratch(),
-                      &fail, Label::kNear);
-  __ JumpIfHeapNumberNotSmi(kInterpreterAccumulatorRegister, &fail, Label::kNear);
+                      HEAP_NUMBER_TYPE, scratch_scope.AcquireScratch(), &fail1);
+  __ JumpIfHeapNumberNotSmi(case_value, &fail2);
 
   __ Bind(&have_int32);
   __ Switch(case_value, case_value_base, labels.get(), offsets.size());
+  
+  __ Bind(&fail1);
+  __ Bind(&fail2);
+  */
+  
+  Register case_value = scratch_scope.AcquireScratch();
+  Label untag, stmt, fail1, fail2;
+  
+  __ JumpIfSmi(kInterpreterAccumulatorRegister, &untag);
+  __ JumpIfObjectType(Condition::kNotEqual, kInterpreterAccumulatorRegister,
+                      HEAP_NUMBER_TYPE, scratch_scope.AcquireScratch(), &fail1);
+  __ JumpIfHeapNumberNotSmi(case_value, &fail2);
+  __ Jump(&stmt);
+
+  __ Bind(&untag);
+  __ SmiUntag(case_value, kInterpreterAccumulatorRegister);
+  __ Bind(&stmt);
+  __ Switch(case_value, case_value_base, labels.get(), offsets.size());
+  
+  __ Bind(&fail1);
+  __ Bind(&fail2);
 }
 
 void BaselineCompiler::VisitForInEnumerate() {
