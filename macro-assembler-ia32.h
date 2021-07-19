@@ -28,6 +28,7 @@
 #include "src/common/globals.h"
 #include "src/execution/frames.h"
 #include "src/handles/handles.h"
+#include "src/objects/heap-number.h"
 #include "src/objects/heap-object.h"
 #include "src/objects/smi.h"
 #include "src/roots/roots.h"
@@ -67,6 +68,20 @@ class StackArgumentsAccessor {
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(StackArgumentsAccessor);
 };
+
+// -----------------------------------------------------------------------------
+// Static helper functions.
+
+// Generate an Operand for loading a field from an object.
+inline Operand FieldOperand(Register object, int offset) {
+  return Operand(object, offset - kHeapObjectTag);
+}
+
+// Generate an Operand for loading an indexed field from an object.
+inline Operand FieldOperand(Register object, Register index, ScaleFactor scale,
+                            int offset) {
+  return Operand(object, index, scale, offset - kHeapObjectTag);
+}
 
 class V8_EXPORT_PRIVATE TurboAssembler : public SharedTurboAssembler {
  public:
@@ -623,8 +638,13 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   }
   
   // Jump if the heap number in the register is not representable as an smi.
-  void JumpIfHeapNumberNotSmi(Register value, Label* not_smi_label,
-                           Label::Distance distance = Label::kFar);
+  void JumpIfHeapNumberNotSmi(Register dst, Label* not_smi_label,
+                           Label::Distance distance = Label::kFar) {
+    cvttsd2si(dst, FieldOperand(kInterpreterAccumulatorRegister, HeapNumber::kValueOffset));
+    cvtsi2sd(kFPReturnRegister0, dst);
+    ucomisd(kFPReturnRegister0, FieldOperand(kInterpreterAccumulatorRegister, HeapNumber::kValueOffset));
+    j(not_equal, not_smi_label, distance);
+  }
 
   template <typename Field>
   void DecodeField(Register reg) {
@@ -754,20 +774,6 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(MacroAssembler);
 };
-
-// -----------------------------------------------------------------------------
-// Static helper functions.
-
-// Generate an Operand for loading a field from an object.
-inline Operand FieldOperand(Register object, int offset) {
-  return Operand(object, offset - kHeapObjectTag);
-}
-
-// Generate an Operand for loading an indexed field from an object.
-inline Operand FieldOperand(Register object, Register index, ScaleFactor scale,
-                            int offset) {
-  return Operand(object, index, scale, offset - kHeapObjectTag);
-}
 
 #define ACCESS_MASM(masm) masm->
 

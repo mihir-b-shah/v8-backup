@@ -1343,19 +1343,23 @@ void MacroAssembler::JumpIfNotSmi(Operand src, Label* on_not_smi,
   
 void MacroAssembler::JumpIfHeapNumberNotSmi(Register dst, Label* not_smi_label,
                                             Label::Distance near_jump) {
-  /*
-  Movsd(kScratchDoubleReg, FieldOperand(kInterpreterAccumulatorRegister, HeapNumber::kValueOffset));
-  Cvttsd2si(dst, kScratchDoubleReg);
-  */
+  // TODO(leszeks): There could be a couple ways to make this more 
+  // efficient. The precision flag is set by Cvttsd2si, in the 
+  // MXCSR register if the conversion is not perfect. However, 
+  // jumping on the MXCSR register is very convoluted, and the bits
+  // are sticky- meaning clearing them before operating would only
+  // add overhead. Another option is using x87 floating point 
+  // operation, namely fistp_d. This also sets a condition code
+  // (C1), but we would have to move that register to an x64 GPR, 
+  // and then jump on it, and also move the result to another GPR. 
+  // Of course also, we would maybe have to deal with overflow/
+  // underflow flags as well, which may complicate things further. 
+  // Thus, on the whole, may be more expensive. 
+
   Cvttsd2si(dst, FieldOperand(kInterpreterAccumulatorRegister, HeapNumber::kValueOffset));
   Cvtlsi2sd(kScratchDoubleReg, dst);
   Ucomisd(kScratchDoubleReg, FieldOperand(kInterpreterAccumulatorRegister, HeapNumber::kValueOffset));
   j(not_equal, not_smi_label, near_jump);
-  /*
-  Cvtlsi2sd(kScratchDoubleReg, dst);
-  Ucomisd(kScratchDoubleReg, MemOperand(kInterpreterAccumulatorRegister, HeapNumber::kValueOffset));
-  j(not_equal, not_smi_label, near_jump);
-  */
 }
 
 void MacroAssembler::SmiAddConstant(Operand dst, Smi constant) {
