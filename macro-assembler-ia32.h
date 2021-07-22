@@ -201,6 +201,15 @@ class V8_EXPORT_PRIVATE TurboAssembler : public SharedTurboAssembler {
     test(value, Immediate(kSmiTagMask));
     j(zero, smi_label, distance);
   }
+  
+  // Jump if the heap number in the register is not representable as an smi.
+  void JumpIfHeapNumberNotSmi(Register dst, Label* not_smi_label,
+                           Label::Distance distance = Label::kFar) {
+    cvttsd2si(dst, FieldOperand(kInterpreterAccumulatorRegister, HeapNumber::kValueOffset));
+    cvtsi2sd(kFPReturnRegister0, dst);
+    ucomisd(kFPReturnRegister0, FieldOperand(kInterpreterAccumulatorRegister, HeapNumber::kValueOffset));
+    j(not_equal, not_smi_label, distance);
+  }
 
   void JumpIfEqual(Register a, int32_t b, Label* dest) {
     cmp(a, Immediate(b));
@@ -637,15 +646,6 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
     j(not_zero, smi_label, distance);
   }
   
-  // Jump if the heap number in the register is not representable as an smi.
-  void JumpIfHeapNumberNotSmi(Register dst, Label* not_smi_label,
-                           Label::Distance distance = Label::kFar) {
-    cvttsd2si(dst, FieldOperand(kInterpreterAccumulatorRegister, HeapNumber::kValueOffset));
-    cvtsi2sd(kFPReturnRegister0, dst);
-    ucomisd(kFPReturnRegister0, FieldOperand(kInterpreterAccumulatorRegister, HeapNumber::kValueOffset));
-    j(not_equal, not_smi_label, distance);
-  }
-
   template <typename Field>
   void DecodeField(Register reg) {
     static const int shift = Field::kShift;

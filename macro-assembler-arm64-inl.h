@@ -1106,6 +1106,16 @@ void TurboAssembler::JumpIfSmi(Register value, Label* smi_label,
   }
 }
 
+void TurboAssembler::JumpIfHeapNumberNotSmi(Register dst, Label* not_smi_label) {
+  UseScratchRegisterScope scope(this);
+  VRegister tmp = scope.AcquireV(kFormat1D);
+  Ldr(tmp, FieldMemOperand(kInterpreterAccumulatorRegister, HeapNumber::kValueOffset));
+  Fcvtzs(dst, tmp);
+  Scvtf(kFPReturnRegister0, dst);
+  Fcmp(kFPReturnRegister0, tmp);
+  B(ne, not_smi_label);
+}
+
 void TurboAssembler::JumpIfEqual(Register x, int32_t y, Label* dest) {
   CompareAndBranch(x, y, eq, dest);
 }
@@ -1116,16 +1126,6 @@ void TurboAssembler::JumpIfLessThan(Register x, int32_t y, Label* dest) {
 
 void MacroAssembler::JumpIfNotSmi(Register value, Label* not_smi_label) {
   JumpIfSmi(value, nullptr, not_smi_label);
-}
-
-void MacroAssembler::JumpIfHeapNumberNotSmi(Register dst, Label* not_smi_label) {
-  UseScratchRegisterScope scope(this);
-  VRegister tmp = scope.AcquireV(kFormat1D);
-  Ldr(tmp, FieldMemOperand(kInterpreterAccumulatorRegister, HeapNumber::kValueOffset));
-  Fcvtzs(dst, tmp);
-  Scvtf(kFPReturnRegister0, dst);
-  Fcmp(kFPReturnRegister0, tmp);
-  B(ne, not_smi_label);
 }
 
 void TurboAssembler::jmp(Label* L) { B(L); }

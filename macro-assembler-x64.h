@@ -231,6 +231,10 @@ class V8_EXPORT_PRIVATE TurboAssembler : public SharedTurboAssembler {
   // Jump to label if the value is a tagged smi.
   void JumpIfSmi(Register src, Label* on_smi,
                  Label::Distance near_jump = Label::kFar);
+  
+  // Jump if the heap number in the register is not representable as an smi.
+  void JumpIfHeapNumberNotSmi(Register value, Label* not_smi_label,
+                    Label::Distance near_jump = Label::kFar);
 
   void JumpIfEqual(Register a, int32_t b, Label* dest) {
     cmpl(a, Immediate(b));
@@ -782,10 +786,6 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   void JumpIfNotSmi(Operand src, Label* on_not_smi,
                     Label::Distance near_jump = Label::kFar);
   
-  // Jump if the heap number in the register is not representable as an smi.
-  void JumpIfHeapNumberNotSmi(Register value, Label* not_smi_label,
-                    Label::Distance near_jump = Label::kFar);
-
   // Operations on tagged smi values.
 
   // Smis represent a subset of integers. The subset is always equivalent to

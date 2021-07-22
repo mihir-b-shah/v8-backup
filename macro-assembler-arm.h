@@ -527,6 +527,8 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
 
   // Jump if the register contains a smi.
   void JumpIfSmi(Register value, Label* smi_label);
+  // Jump if the heap number in the register is not representable as an smi.
+  void JumpIfHeapNumberNotSmi(Register value, Label* not_smi_label);
 
   void JumpIfEqual(Register x, int32_t y, Label* dest);
   void JumpIfLessThan(Register x, int32_t y, Label* dest);
@@ -838,8 +840,6 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   void SmiTst(Register value);
   // Jump if either of the registers contain a non-smi.
   void JumpIfNotSmi(Register value, Label* not_smi_label);
-  // Jump if the heap number in the register is not representable as an smi.
-  void JumpIfHeapNumberNotSmi(Register value, Label* not_smi_label);
 
   // Abort execution if argument is a smi, enabled via --debug-code.
   void AssertNotSmi(Register object);

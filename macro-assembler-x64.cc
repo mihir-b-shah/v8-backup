@@ -1329,19 +1329,7 @@ void TurboAssembler::JumpIfSmi(Register src, Label* on_smi,
   j(smi, on_smi, near_jump);
 }
 
-void MacroAssembler::JumpIfNotSmi(Register src, Label* on_not_smi,
-                                  Label::Distance near_jump) {
-  Condition smi = CheckSmi(src);
-  j(NegateCondition(smi), on_not_smi, near_jump);
-}
-
-void MacroAssembler::JumpIfNotSmi(Operand src, Label* on_not_smi,
-                                  Label::Distance near_jump) {
-  Condition smi = CheckSmi(src);
-  j(NegateCondition(smi), on_not_smi, near_jump);
-}
-  
-void MacroAssembler::JumpIfHeapNumberNotSmi(Register dst, Label* not_smi_label,
+void TurboAssembler::JumpIfHeapNumberNotSmi(Register dst, Label* not_smi_label,
                                             Label::Distance near_jump) {
   // TODO(leszeks): There could be a couple ways to make this more 
   // efficient. The precision flag is set by Cvttsd2si, in the 
@@ -1362,6 +1350,18 @@ void MacroAssembler::JumpIfHeapNumberNotSmi(Register dst, Label* not_smi_label,
   j(not_equal, not_smi_label, near_jump);
 }
 
+void MacroAssembler::JumpIfNotSmi(Register src, Label* on_not_smi,
+                                  Label::Distance near_jump) {
+  Condition smi = CheckSmi(src);
+  j(NegateCondition(smi), on_not_smi, near_jump);
+}
+
+void MacroAssembler::JumpIfNotSmi(Operand src, Label* on_not_smi,
+                                  Label::Distance near_jump) {
+  Condition smi = CheckSmi(src);
+  j(NegateCondition(smi), on_not_smi, near_jump);
+}
+  
 void MacroAssembler::SmiAddConstant(Operand dst, Smi constant) {
   if (constant.value() != 0) {
     if (SmiValuesAre32Bits()) {
