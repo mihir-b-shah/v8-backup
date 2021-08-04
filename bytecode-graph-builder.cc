@@ -436,6 +436,7 @@ class BytecodeGraphBuilder {
 
   Graph* graph() const { return jsgraph_->graph(); }
   CommonOperatorBuilder* common() const { return jsgraph_->common(); }
+  MachineOperatorBuilder* machine() const { return jsgraph_->machine(); }
   Zone* graph_zone() const { return graph()->zone(); }
   JSGraph* jsgraph() const { return jsgraph_; }
   Isolate* isolate() const { return jsgraph_->isolate(); }
@@ -3600,13 +3601,42 @@ void BytecodeGraphBuilder::VisitJumpLoop() {
   BuildJump();
 }
 
-void BytecodeGraphBuilder::BuildSwitchOnSmi(Node* condition) {
+void BytecodeGraphBuilder::BuildSwitchOnSmi(Node* input) {
   interpreter::JumpTableTargetOffsets offsets =
       bytecode_iterator().GetJumpTableTargetOffsets();
 
-  Node* smi_check = NewNode(simplified()->ObjectIsSmi(), condition);
+  // sets two things - flags if possible, if so, Smi in accumulator.
+  Node* is_smi = NewNode(simplified()->ObjectIsSmi(), input);
+  Node* br_smi = NewBranch(is_smi, BranchHint::kTrue, IsSafetyCheck::kNoSafetyCheck);
+  {
+    SubEnvironment resume_env(this);
+    NewIfFalse();
 
-  NewSwitch(smi_check, offsets.size() + 1);
+    Node* generator_state =
+        NewNode(javascript()->GeneratorRestoreContinuation(), generator);
+    environment()->BindGeneratorState(generator_state);
+
+    Node* generator_context =
+        NewNode(javascript()->GeneratorRestoreContext(), generator);
+    environment()->SetContext(generator_context);
+
+    BuildSwitchOnGeneratorState(bytecode_analysis().resume_jump_targets(),
+                                false);
+  }
+
+  // Fallthrough for the first-call case.
+  NewIfTrue();
+
+  Node* load_heap_num = NewNode(simplified()->LoadField(AccessBuilder::ForHeapNumberValue(), input));
+  Node* f2i = NewNode(machine()->TruncateFloat64ToWord32(), input);
+  Node* i2f = NewNode(machine()->ChangeInt32ToFloat64(), f2i);
+  Node* fcmp = NewNode(machine()->Float64Equal(), i2f, load_heap_number);
+  Node* f_br_smi = NewBranch(fcmp, BranchHint::kNone, IsSafetyCheck::kNoSafetyCheck);
+
+  Node* ctl = MergeControl(br_smi, f_br_smi);
+  Node* phi = MergeValue(input, f2i, ctl); // tagging issues?
+
+  NewSwitch(condition, offsets.size() + 1);
   for (const auto& entry : offsets) {
     SubEnvironment sub_environment(this);
     NewIfValue(entry.case_value);
